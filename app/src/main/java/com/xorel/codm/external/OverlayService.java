@@ -265,8 +265,13 @@ public class OverlayService extends Service {
                                     postToast("Overlay GL not ready — wait a moment");
                                     return true;
                                 }
-                                NativeBridge.nativeOpenMenu();
-                                setMenuTouch(true);
+                                if (NativeBridge.nativeIsMenuInteractive()) {
+                                    NativeBridge.nativeMinimizeMenu();
+                                    setMenuTouch(false);
+                                } else {
+                                    NativeBridge.nativeOpenMenu();
+                                    setMenuTouch(true);
+                                }
                                 bumpGlFrames();
                             }
                             return true;
@@ -360,13 +365,12 @@ public class OverlayService extends Service {
             Log.w(TAG, "touch flags", t);
         }
         if (fabLogo != null) {
-            fabLogo.setVisibility(interactive ? View.GONE : View.VISIBLE);
-            if (!interactive && fabLp != null) {
-                clampFabToScreen();
-                try {
-                    wm.updateViewLayout(fabLogo, fabLp);
-                } catch (Throwable ignored) {
-                }
+            fabLogo.setVisibility(View.VISIBLE);
+            fabLogo.setAlpha(interactive ? 0.92f : 1f);
+            clampFabToScreen();
+            try {
+                wm.updateViewLayout(fabLogo, fabLp);
+            } catch (Throwable ignored) {
             }
         }
         if (glView != null) {

@@ -145,7 +145,9 @@ static void render_frame() {
     ImGui::NewFrame();
     draw_ui();
     ImGui::Render();
-    glViewport(0, 0, g_w, g_h);
+    const int vw = fw > 0 ? fw : 1;
+    const int vh = fh > 0 ? fh : 1;
+    glViewport(0, 0, vw, vh);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
@@ -231,7 +233,13 @@ void ui_set_display_size(int w, int h) {
     if (h > 0) g_displayH = h;
 }
 
-void ui_open_menu() { g_showMenu = true; }
+void ui_open_menu() {
+    g_showMenu = true;
+    if (g_w <= 0 && g_displayW > 0) {
+        g_w = g_displayW;
+        g_h = g_displayH;
+    }
+}
 
 void ui_toggle_menu() { g_showMenu = !g_showMenu; }
 
