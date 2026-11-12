@@ -17,6 +17,8 @@
 #include <mutex>
 #include <thread>
 
+ImVec2 initialScreenSize{0.f, 0.f};
+
 static int g_w = 0, g_h = 0;
 static bool g_glReady = false;
 static bool g_imgui = false;
@@ -145,6 +147,8 @@ void ui_gl_surface_created() {}
 void ui_gl_surface_changed(int w, int h) {
     g_w = w;
     g_h = h;
+    if (initialScreenSize.x <= 0.f && w > 0)
+        initialScreenSize = ImVec2((float)w, (float)h);
     std::lock_guard<std::mutex> lock(g_mu);
     if (!g_glReady) {
         IMGUI_CHECKVERSION();
