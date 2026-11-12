@@ -254,11 +254,9 @@ public class OverlayService extends Service {
                             if (fabHoldExitTriggered) return true;
                             if (!fabDragging) {
                                 applyDisplayGeometry();
-                                setMenuTouch(true);
-                                NativeBridge.nativeOpenMenu();
                                 if (glView != null) {
-                                    glView.requestRender();
-                                    main.post(glView::requestRender);
+                                    glView.queueEvent(NativeBridge::nativeOpenMenu);
+                                    bumpGlFrames();
                                 }
                             }
                             return true;
@@ -314,6 +312,15 @@ public class OverlayService extends Service {
         else main.post(() -> applyMenuTouchFlags(interactive));
     }
 
+    private void bumpGlFrames() {
+        if (glView == null) return;
+        glView.requestRender();
+        main.post(glView::requestRender);
+        main.postDelayed(glView::requestRender, 32);
+        main.postDelayed(glView::requestRender, 96);
+        main.postDelayed(glView::requestRender, 160);
+    }
+
     private void applyMenuTouchFlags(boolean interactive) {
         if (surfaceLp == null || wm == null || root == null) return;
         menuInteractive = interactive;
@@ -327,9 +334,15 @@ public class OverlayService extends Service {
         surfaceLp.flags = interactive ? SURFACE_FLAGS_MENU : SURFACE_FLAGS_PASS;
         root.setClickable(interactive);
         root.setFocusable(interactive);
+        root.setFocusableInTouchMode(interactive);
         if (glView != null) {
             glView.setClickable(interactive);
             glView.setFocusable(interactive);
+            glView.setFocusableInTouchMode(interactive);
+            glView.setRenderMode(
+                    interactive
+                            ? android.opengl.GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                            : android.opengl.GLSurfaceView.RENDERMODE_WHEN_DIRTY);
         }
         try {
             wm.updateViewLayout(root, surfaceLp);
@@ -346,7 +359,10 @@ public class OverlayService extends Service {
                 }
             }
         }
-        if (glView != null) glView.requestRender();
+        if (glView != null) {
+            if (interactive) bumpGlFrames();
+            else glView.requestRender();
+        }
     }
 
     private void startForegroundNotif() {

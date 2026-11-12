@@ -125,7 +125,7 @@ static void draw_ui() {
         ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "Tap X — close menu");
     }
     ImGui::End();
-    ui_sync_menu_touch_state();
+    if (!g_showMenu) ui_sync_menu_touch_state();
 }
 
 static void render_frame() {
@@ -195,9 +195,20 @@ void ui_touch(int action, float x, float y) {
     else if (action == 1) io.MouseDown[0] = false;
 }
 
-void ui_open_menu() { g_showMenu = true; }
-void ui_toggle_menu() { g_showMenu = !g_showMenu; }
-void ui_minimize_menu() { g_showMenu = false; }
+void ui_open_menu() {
+    g_showMenu = true;
+    jni_set_menu_touch(true);
+}
+
+void ui_toggle_menu() {
+    g_showMenu = !g_showMenu;
+    jni_set_menu_touch(g_showMenu);
+}
+
+void ui_minimize_menu() {
+    g_showMenu = false;
+    jni_set_menu_touch(false);
+}
 bool ui_menu_interactive() { return g_showMenu; }
 bool ui_needs_continuous_gl() { return g_showMenu || g_espOn; }
 
