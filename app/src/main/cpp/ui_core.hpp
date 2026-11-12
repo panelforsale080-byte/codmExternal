@@ -15,5 +15,6 @@ bool ui_needs_continuous_gl();
 
 void ui_esp_start();
 void ui_esp_stop();
+void ui_set_display_size(int w, int h);
 void ui_set_context(void *ctx);
 void ui_sync_menu_touch_state();

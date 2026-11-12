@@ -129,7 +129,7 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
     public boolean onTouchEvent(MotionEvent event) {
         if (!surfaceReady || !NativeBridge.nativeIsMenuInteractive()) return false;
         try {
-            NativeBridge.nativeTouch(event.getActionMasked(), event.getX(), event.getY());
+            NativeBridge.nativeTouch(event.getAction(), event.getX(), event.getY());
             requestRender();
         } catch (Throwable t) {
             Log.e(TAG, "touch", t);

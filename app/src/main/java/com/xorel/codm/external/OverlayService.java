@@ -73,6 +73,9 @@ public class OverlayService extends Service {
             NativeBridge.nativeInit();
             startForegroundNotif();
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            int[] wh = new int[2];
+            getScreenSize(wh);
+            NativeBridge.nativeSetDisplaySize(wh[0], wh[1]);
             attachWindows();
             registerDisplayListener();
         } catch (Throwable t) {
@@ -138,6 +141,9 @@ public class OverlayService extends Service {
         }
         glView.requestLayout();
         glView.requestRender();
+        int[] wh = new int[2];
+        getScreenSize(wh);
+        NativeBridge.nativeSetDisplaySize(wh[0], wh[1]);
     }
 
     private void clampFabToScreen() {
@@ -163,6 +169,7 @@ public class OverlayService extends Service {
                                     glReady = true;
                                     try {
                                         NativeBridge.nativeMinimizeMenu();
+                                        setMenuTouch(false);
                                     } catch (Throwable t) {
                                         Log.w(TAG, "minimize", t);
                                     }
@@ -214,7 +221,7 @@ public class OverlayService extends Service {
         fabLp.x = wh[0] - fabSize - dp(16);
         fabLp.y = dp(52);
 
-        final int dragSlopPx = dp(10);
+        final int dragSlopPx = dp(24);
         fabLogo.setOnTouchListener(
                 (v, event) -> {
                     switch (event.getActionMasked()) {
@@ -254,10 +261,13 @@ public class OverlayService extends Service {
                             if (fabHoldExitTriggered) return true;
                             if (!fabDragging) {
                                 applyDisplayGeometry();
-                                if (glView != null) {
-                                    glView.queueEvent(NativeBridge::nativeOpenMenu);
-                                    bumpGlFrames();
+                                if (glView == null || !glReady) {
+                                    postToast("Overlay GL not ready — wait a moment");
+                                    break;
                                 }
+                                NativeBridge.nativeOpenMenu();
+                                setMenuTouch(true);
+                                bumpGlFrames();
                             }
                             return true;
                         case MotionEvent.ACTION_CANCEL:

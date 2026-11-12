@@ -20,6 +20,7 @@
 ImVec2 initialScreenSize{0.f, 0.f};
 
 static int g_w = 0, g_h = 0;
+static int g_displayW = 0, g_displayH = 0;
 static bool g_glReady = false;
 static bool g_imgui = false;
 static std::mutex g_mu;
@@ -72,8 +73,10 @@ static void apply_style() {
 }
 
 static void draw_ui() {
-    const float sw = (float)g_w;
-    const float sh = (float)g_h;
+    float sw = (float)g_w;
+    float sh = (float)g_h;
+    if (sw < 1.f && g_displayW > 0) sw = (float)g_displayW;
+    if (sh < 1.f && g_displayH > 0) sh = (float)g_displayH;
     CodmFrame fr;
     {
         std::lock_guard<std::mutex> lock(g_mu);
@@ -85,8 +88,12 @@ static void draw_ui() {
         codm_draw_esp(bg, sw, sh, fr, g_feat);
     }
 
-    if (!g_showMenu) return;
+    if (g_showMenu) {
+        ImDrawList *bg = ImGui::GetBackgroundDrawList();
+        bg->AddRectFilled(ImVec2(0, 0), ImVec2(sw, sh), IM_COL32(0, 0, 0, 140));
+    }
 
+    if (g_showMenu) {
     ImGui::SetNextWindowSize(ImVec2(380, 460), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(24, 48), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("CodmExternal", &g_showMenu, ImGuiWindowFlags_NoCollapse)) {
@@ -125,12 +132,16 @@ static void draw_ui() {
         ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "Tap X — close menu");
     }
     ImGui::End();
-    if (!g_showMenu) ui_sync_menu_touch_state();
+    }
+
+    ui_sync_menu_touch_state();
 }
 
 static void render_frame() {
+    const int fw = g_w > 0 ? g_w : g_displayW;
+    const int fh = g_h > 0 ? g_h : g_displayH;
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplAndroid_NewFrame(g_w, g_h);
+    ImGui_ImplAndroid_NewFrame(fw > 0 ? fw : 1, fh > 0 ? fh : 1);
     ImGui::NewFrame();
     draw_ui();
     ImGui::Render();
@@ -153,6 +164,9 @@ void ui_gl_surface_changed(int w, int h) {
     if (!g_glReady) {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
+        ImGuiIO &io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
         apply_style();
         ImGui_ImplAndroid_Init(nullptr);
         ImGui_ImplOpenGL3_Init(g_glsl);
@@ -191,23 +205,39 @@ void ui_touch(int action, float x, float y) {
     if (!g_glReady) return;
     ImGuiIO &io = ImGui::GetIO();
     io.MousePos = ImVec2(x, y);
-    if (action == 0) io.MouseDown[0] = true;
-    else if (action == 1) io.MouseDown[0] = false;
+    const int a = action & 0xff;
+    switch (a) {
+    case 0: /* ACTION_DOWN */
+    case 5: /* ACTION_POINTER_DOWN */
+        io.AddMousePosEvent(x, y);
+        io.AddMouseButtonEvent(0, true);
+        break;
+    case 1: /* ACTION_UP */
+    case 6: /* ACTION_POINTER_UP */
+    case 3: /* ACTION_CANCEL */
+        io.AddMousePosEvent(x, y);
+        io.AddMouseButtonEvent(0, false);
+        break;
+    case 2: /* ACTION_MOVE */
+        io.AddMousePosEvent(x, y);
+        break;
+    default:
+        break;
+    }
 }
 
-void ui_open_menu() {
-    g_showMenu = true;
-    jni_set_menu_touch(true);
+void ui_set_display_size(int w, int h) {
+    if (w > 0) g_displayW = w;
+    if (h > 0) g_displayH = h;
 }
 
-void ui_toggle_menu() {
-    g_showMenu = !g_showMenu;
-    jni_set_menu_touch(g_showMenu);
-}
+void ui_open_menu() { g_showMenu = true; }
+
+void ui_toggle_menu() { g_showMenu = !g_showMenu; }
 
 void ui_minimize_menu() {
     g_showMenu = false;
-    jni_set_menu_touch(false);
+    ui_sync_menu_touch_state();
 }
 bool ui_menu_interactive() { return g_showMenu; }
 bool ui_needs_continuous_gl() { return g_showMenu || g_espOn; }

@@ -34,6 +34,11 @@ Java_com_xorel_codm_external_NativeBridge_nativeInit(JNIEnv *env, jclass clazz) 
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeSetDisplaySize(JNIEnv *, jclass, jint w, jint h) {
+    ui_set_display_size((int)w, (int)h);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeGlSurfaceCreated(JNIEnv *, jclass) {
     ui_gl_surface_created();
 }
