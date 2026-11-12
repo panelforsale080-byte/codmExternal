@@ -51,7 +51,8 @@
                     android:layout_width="56dp"
                     android:layout_height="56dp"
                     android:contentDescription="@string/app_name"
-                    android:src="@drawable/ic_xorel_logo" />
+                    android:src="@drawable/ic_xorel_logo"
+                    android:tint="@null" />
 
                 <LinearLayout
                     android:layout_width="0dp"

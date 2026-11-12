@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -29,6 +30,9 @@ public class EspActivity extends Activity {
         Button btnOverlay = findViewById(R.id.btnOverlay);
         Button btnStart = findViewById(R.id.btnStart);
         Button btnGame = findViewById(R.id.btnGame);
+
+        ImageView logo = findViewById(R.id.logo);
+        if (logo != null) logo.setImageTintList(null);
 
         btnOverlay.setOnClickListener(v -> openOverlaySettings());
         btnStart.setOnClickListener(v -> tryStartOverlay());

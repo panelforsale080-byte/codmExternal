@@ -4,10 +4,14 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- High-contrast CODM-style mark (visible on dark FAB + launcher) -->
     <path
-        android:fillColor="#FF374151"
-        android:pathData="M54,22 L82,54 L54,86 L26,54 Z" />
+        android:fillColor="#FFE85D04"
+        android:pathData="M54,18 L86,54 L54,90 L22,54 Z" />
+    <path
+        android:fillColor="#FF1C1C1E"
+        android:pathData="M54,30 L74,54 L54,78 L34,54 Z" />
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M54,34 L72,54 L54,74 L36,54 Z" />
+        android:pathData="M54,40 L66,54 L54,68 L42,54 Z" />
 </vector>
