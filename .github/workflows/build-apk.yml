@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 45
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
+      NDK_VERSION: "28.2.13676358"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,9 +26,27 @@ jobs:
 
       - name: Install Android SDK + NDK
         run: |
+          set -e
           SDKM="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null || true
-          "$SDKM" "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;28.2.13676358"
+          NDK_DIR="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          if [ -f "${NDK_DIR}/source.properties" ]; then
+            echo "NDK ${NDK_VERSION} already present — skip download"
+          else
+            for attempt in 1 2 3 4 5; do
+              rm -rf "${ANDROID_HOME}/ndk/${NDK_VERSION}" 2>/dev/null || true
+              if "$SDKM" "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;${NDK_VERSION}"; then
+                break
+              fi
+              echo "sdkmanager failed (attempt ${attempt}/5), retrying in 20s..."
+              sleep 20
+              if [ "$attempt" -eq 5 ]; then
+                echo "NDK install failed after 5 attempts"
+                exit 1
+              fi
+            done
+          fi
+          test -f "${NDK_DIR}/source.properties"
 
       - run: chmod +x gradlew
 

@@ -6,7 +6,6 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.content.res.ColorStateList;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
