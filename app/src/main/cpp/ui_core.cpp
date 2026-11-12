@@ -77,11 +77,8 @@ static void draw_ui() {
     float sh = (float)g_h;
     if (sw < 1.f && g_displayW > 0) sw = (float)g_displayW;
     if (sh < 1.f && g_displayH > 0) sh = (float)g_displayH;
-    CodmFrame fr;
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        fr = g_frame;
-    }
+    /* Caller (ui_gl_draw_frame) already holds g_mu — do not lock again. */
+    CodmFrame fr = g_frame;
 
     if (g_espOn && fr.status == CodmStatus::Ready) {
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
@@ -94,9 +91,12 @@ static void draw_ui() {
     }
 
     if (g_showMenu) {
-    ImGui::SetNextWindowSize(ImVec2(380, 460), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(24, 48), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("CodmExternal", &g_showMenu, ImGuiWindowFlags_NoCollapse)) {
+    const float mw = sw > 420.f ? 400.f : sw * 0.9f;
+    const float mh = sh > 520.f ? 480.f : sh * 0.75f;
+    ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(24.f, 48.f), ImGuiCond_Always);
+    if (ImGui::Begin("CodmExternal", &g_showMenu,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::TextDisabled("Target: com.garena.game.codm");
         ImGui::Text("Status: %s", status_name(fr.status));
         if (fr.hint[0]) ImGui::TextWrapped("%s", fr.hint);
