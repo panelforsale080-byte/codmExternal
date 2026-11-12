@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CodmExternal</string>
+    <string name="xorel_tagline">CODM external ESP — offsets 1.6.59</string>
+    <string name="section_actions">Actions</string>
+    <string name="btn_overlay_perm">Allow display over apps</string>
+    <string name="btn_start_overlay">Launch overlay</string>
+    <string name="btn_open_game">Open CODM</string>
+    <string name="fab_open_menu">Open menu</string>
+    <string name="card_steps_title">Quick start</string>
+    <string name="step_1">Grant overlay permission, then launch the floating layer.</string>
+    <string name="step_2">Open CODM and enter a match. In the overlay menu: Find game, enable ESP.</string>
+    <string name="step_3">Float icon opens settings; close the menu (X) for touch-through play.</string>
+    <string name="overlay_running">Overlay is already running</string>
+    <string name="toast_need_overlay">Allow overlay permission first</string>
+    <string name="toast_overlay_started">Overlay started — switch to CODM</string>
+    <string name="notif_channel">CodmExternal</string>
+    <string name="notif_title">CodmExternal</string>
+    <string name="notif_text">Tap float icon for ESP menu</string>
+</resources>

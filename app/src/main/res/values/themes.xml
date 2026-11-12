@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- No @font here: virtual containers (Parallel Space / GSpace) often fail to
+         inflate a theme that references res/font, which blanks the launcher. -->
+    <style name="Theme.Xorel" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:statusBarColor">@color/xorel_bg_start</item>
+        <item name="android:navigationBarColor">@color/xorel_bg_start</item>
+        <item name="android:windowBackground">@drawable/bg_xorel_gradient</item>
+    </style>
+</resources>
