@@ -1,9 +1,13 @@
 #include "mem.hpp"
 #include "external_esp_read.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
 
 static std::mutex g_mapsMu;
 static pid_t g_mapsPid = 0;
@@ -93,4 +97,42 @@ bool mem_write(pid_t pid, uintptr_t addr, const void *buf, size_t n) {
     iovec local{(void *)buf, n};
     iovec remote{(void *)addr, n};
     return mem_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)n;
+}
+
+static bool ptrace_write_bytes(pid_t pid, uintptr_t addr, const void *buf, size_t len) {
+    const uint8_t *src = static_cast<const uint8_t *>(buf);
+    size_t off = 0;
+    while (off < len) {
+        const uintptr_t cur = addr + off;
+        const uintptr_t aligned = cur & ~7ULL;
+        const size_t shift = static_cast<size_t>(cur - aligned);
+        errno = 0;
+        long word = ptrace(PTRACE_PEEKTEXT, pid, reinterpret_cast<void *>(aligned), nullptr);
+        if (word == -1 && errno) return false;
+        uint8_t tmp[8];
+        std::memcpy(tmp, &word, sizeof(tmp));
+        const size_t n = std::min(len - off, 8 - shift);
+        std::memcpy(tmp + shift, src + off, n);
+        std::memcpy(&word, tmp, sizeof(tmp));
+        if (ptrace(PTRACE_POKETEXT, pid, reinterpret_cast<void *>(aligned),
+                    reinterpret_cast<void *>(word)) != 0)
+            return false;
+        off += n;
+    }
+    return true;
+}
+
+bool mem_write_exec(pid_t pid, uintptr_t addr, const void *buf, size_t n) {
+    if (!pid || !addr || !buf || !n) return false;
+    if (mem_write(pid, addr, buf, n)) return true;
+
+    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) != 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) {
+        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        return false;
+    }
+    const bool ok = ptrace_write_bytes(pid, addr, buf, n);
+    ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+    return ok;
 }

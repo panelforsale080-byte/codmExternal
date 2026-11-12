@@ -25,12 +25,16 @@ bool mem_module_base(pid_t pid, const char *soname, uintptr_t &base) {
     if (!soname || !soname[0]) return false;
     std::vector<MapsReg> maps;
     if (!mem_maps(pid, maps)) return false;
+    const std::string suffix = std::string("/") + soname;
     for (const auto &r : maps) {
-        if (r.path.find(soname) == std::string::npos) continue;
+        if (r.path.size() < suffix.size()) continue;
+        if (r.path.compare(r.path.size() - suffix.size(), suffix.size(), suffix) != 0 &&
+            r.path.find(soname) == std::string::npos)
+            continue;
         if (r.perms[0] != 'r' || r.perms[2] != 'x') continue;
-        base = r.start;
-        return true;
+        if (!base || r.start < base) base = r.start;
     }
+    return base != 0;
     return false;
 }
 
@@ -50,7 +54,10 @@ size_t proc_scan_codm(CodmProcHit *out, size_t maxOut) {
         const pid_t pid = static_cast<pid_t>(std::atoi(e->d_name));
         if (pid <= 0 || !proc_alive(pid)) continue;
         const std::string cmd = read_cmdline(pid);
-        if (cmd.find(kTargetPkg) == std::string::npos) continue;
+        if (cmd.empty()) continue;
+        const size_t sp = cmd.find(' ');
+        const std::string pkg = sp == std::string::npos ? cmd : cmd.substr(0, sp);
+        if (pkg != kTargetPkg) continue;
         CodmProcHit h{};
         h.pid = pid;
         h.unity = maps_has(pid, "libunity.so");

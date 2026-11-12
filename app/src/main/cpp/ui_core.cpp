@@ -1,6 +1,7 @@
 #include "ui_core.hpp"
 #include "codm_draw.hpp"
 #include "codm_engine.hpp"
+#include "codm_anogs.hpp"
 #include "codm_proc.hpp"
 #include "overlay_jni.hpp"
 #include "ui_log.hpp"
@@ -107,7 +108,12 @@ static void draw_ui() {
         if (ImGui::Button("Find game", ImVec2(-1, 0))) {
             const pid_t p = proc_best_codm();
             codm_set_want_pid(p);
+            codm_anogs_force_repatch();
             ui_log("[scan] pick pid=%d", (int)p);
+        }
+        if (ImGui::Button("Patch ANOGS (hooks.h)", ImVec2(-1, 0))) {
+            codm_anogs_force_repatch();
+            ui_log("[anogs] manual re-patch requested");
         }
 
         ImGui::Separator();

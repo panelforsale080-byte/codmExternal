@@ -59,13 +59,18 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
     }
     if (!mem_module_base(pid, "libanogs.so", fr.anogs)) {
         std::snprintf(fr.hint, sizeof(fr.hint), "No libanogs.so yet");
-    } else if (!fr.anogsPatched) {
-        char perr[80] = {};
-        fr.anogsPatched = codm_anogs_auto_patch(pid, fr.anogs, perr, sizeof(perr));
-        if (fr.anogsPatched && !g_anogsToast) {
-            g_anogsToast = true;
-            ui_log("[anogs] Success hook — %s", perr);
-            jni_toast("Success hook");
+    } else {
+        fr.anogsPatched = codm_anogs_is_patched(pid);
+        if (!fr.anogsPatched) {
+            char perr[96] = {};
+            fr.anogsPatched = codm_anogs_auto_patch(pid, fr.anogs, perr, sizeof(perr));
+            if (!fr.anogsPatched) {
+                std::snprintf(fr.hint, sizeof(fr.hint), "ANOGS patch: %s", perr[0] ? perr : "failed");
+            } else if (!g_anogsToast) {
+                g_anogsToast = true;
+                ui_log("[anogs] Success hook — %s", perr);
+                jni_toast("Success hook");
+            }
         }
     }
 

@@ -36,6 +36,9 @@ bool mem_is_readable(pid_t pid, uintptr_t addr, size_t len);
 bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n);
 bool mem_write(pid_t pid, uintptr_t addr, const void *buf, size_t n);
 
+/** Writable .text in remote: process_vm_writev, else ptrace POKETEXT (jnmaini PATCH-style). */
+bool mem_write_exec(pid_t pid, uintptr_t addr, const void *buf, size_t n);
+
 template <typename T>
 inline bool mem_read(pid_t pid, uintptr_t addr, T &out) {
     return mem_read(pid, addr, &out, sizeof(T));
