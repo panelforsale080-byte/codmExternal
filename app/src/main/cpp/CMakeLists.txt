@@ -9,6 +9,7 @@ add_library(CodmEsp SHARED
     codm_proc.cpp
     codm_anogs.cpp
     codm_remote.cpp
+    codm_static.cpp
     codm_engine.cpp
     codm_draw.cpp
     mem.cpp

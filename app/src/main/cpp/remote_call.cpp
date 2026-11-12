@@ -1,6 +1,7 @@
 #include "remote_call.hpp"
 #include "mem.hpp"
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -18,6 +19,39 @@
 #ifndef NT_PRSTATUS
 #define NT_PRSTATUS 1
 #endif
+#ifndef NT_FPREGSET
+#define NT_FPREGSET 0x202
+#endif
+
+struct CodmFpsimd {
+    uint64_t v[64]{};
+    uint32_t fpsr = 0, fpcr = 0, pad0 = 0, pad1 = 0;
+};
+
+static CodmFpsimd *saved_fp(RemoteSession &s) {
+    return reinterpret_cast<CodmFpsimd *>(s.savedFp);
+}
+
+static bool get_fp(pid_t tid, CodmFpsimd &fp) {
+    struct iovec iov{&fp, sizeof(fp)};
+    return ptrace(PTRACE_GETREGSET, tid, (void *)NT_FPREGSET, &iov) == 0;
+}
+
+static bool set_fp(pid_t tid, const CodmFpsimd &fp) {
+    struct iovec iov{const_cast<CodmFpsimd *>(&fp), sizeof(fp)};
+    return ptrace(PTRACE_SETREGSET, tid, (void *)NT_FPREGSET, &iov) == 0;
+}
+
+static float fp_lane(const CodmFpsimd &fp, int reg) {
+    float f = 0;
+    std::memcpy(&f, &fp.v[reg * 2], sizeof(f));
+    return f;
+}
+
+static void fp_set_lane(CodmFpsimd &fp, int reg, float f) {
+    std::memset(&fp.v[reg * 2], 0, 16);
+    std::memcpy(&fp.v[reg * 2], &f, sizeof(f));
+}
 
 static std::mutex g_ptraceSessionMu;
 
@@ -59,6 +93,11 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
         return false;
     }
     s.sp = saved->sp;
+    if (!get_fp(s.tid, *saved_fp(s))) {
+        std::snprintf(s.err, sizeof(s.err), "GET FPREGSET fail");
+        ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
+        return false;
+    }
     s.attached = true;
     return true;
 }
@@ -86,6 +125,7 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
+        set_fp(s.tid, *saved_fp(s));
         set_regs(s.tid, *saved_pt(s));
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         s.attached = false;
@@ -149,6 +189,26 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     return success;
 }
 
+bool remote_session_call_vec3(RemoteSession &s, uintptr_t func, uintptr_t x0, const Vec3 *in,
+                              Vec3 &out) {
+    out = {};
+    if (!s.attached || !func) return false;
+    CodmFpsimd fp = *saved_fp(s);
+    if (in) {
+        fp_set_lane(fp, 0, in->x);
+        fp_set_lane(fp, 1, in->y);
+        fp_set_lane(fp, 2, in->z);
+    }
+    if (!set_fp(s.tid, fp)) return false;
+    uintptr_t dummy = 0;
+    if (!remote_session_call(s, func, {x0}, dummy)) return false;
+    if (!get_fp(s.tid, fp)) return false;
+    out.x = fp_lane(fp, 0);
+    out.y = fp_lane(fp, 1);
+    out.z = fp_lane(fp, 2);
+    return std::isfinite(out.x) && std::isfinite(out.y) && std::isfinite(out.z);
+}
+
 bool remote_call(pid_t pid, uintptr_t func, const std::vector<uintptr_t> &args, uintptr_t &ret_x0,
                  char *err, size_t errCap) {
     RemoteSession s{};
@@ -175,6 +235,9 @@ bool remote_session_begin_try(pid_t, RemoteSession &s) {
 void remote_session_end(RemoteSession &) {}
 uintptr_t remote_session_scratch(RemoteSession &, int, size_t) { return 0; }
 bool remote_session_call(RemoteSession &, uintptr_t, const std::vector<uintptr_t> &, uintptr_t &) {
+    return false;
+}
+bool remote_session_call_vec3(RemoteSession &, uintptr_t, uintptr_t, const Vec3 *, Vec3 &) {
     return false;
 }
 bool remote_call(pid_t, uintptr_t, const std::vector<uintptr_t> &, uintptr_t &, char *err,

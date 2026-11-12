@@ -11,7 +11,7 @@ void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame
         if (!e.alive || !e.screenOk) continue;
         const float sx = e.screen.x;
         const float sy = screenH - e.screen.y;
-        if (sx < 0 || sy < 0 || sx > screenW || sy > screenH) continue;
+        if (sx < -screenW || sy < -screenH || sx > screenW * 2.f || sy > screenH * 2.f) continue;
 
         const float boxH = 72.f;
         const float boxW = 38.f;
