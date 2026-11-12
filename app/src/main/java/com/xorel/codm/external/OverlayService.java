@@ -263,7 +263,7 @@ public class OverlayService extends Service {
                                 applyDisplayGeometry();
                                 if (glView == null || !glReady) {
                                     postToast("Overlay GL not ready — wait a moment");
-                                    break;
+                                    return true;
                                 }
                                 NativeBridge.nativeOpenMenu();
                                 setMenuTouch(true);
