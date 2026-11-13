@@ -30,7 +30,11 @@ static const char *g_glsl = "#version 100";
 
 static bool g_showMenu = false;
 static bool g_espOn = false;
-static CodmFeatures g_feat{};
+static CodmFeatures g_feat = [] {
+    CodmFeatures f{};
+    f.box = f.line = f.health = f.distance = f.name = f.armor = f.counter = true;
+    return f;
+}();
 static CodmFrame g_frame{};
 
 static std::atomic<bool> g_runReader{false};
@@ -118,14 +122,27 @@ static void draw_ui() {
         }
 
         ImGui::Separator();
-        if (ImGui::Checkbox("ESP", &g_espOn)) {
+        if (ImGui::Checkbox("ESP ENABLE", &g_espOn)) {
             if (g_espOn) ui_esp_start();
             else ui_esp_stop();
         }
-        ImGui::Checkbox("Box", &g_feat.box);
-        ImGui::Checkbox("Line", &g_feat.line);
-        ImGui::Checkbox("Health", &g_feat.health);
-        ImGui::Checkbox("Distance", &g_feat.distance);
+        ImGui::BeginChild("feats", ImVec2(0, 210), true);
+        ImGui::Checkbox("ESP BOX", &g_feat.box);
+        ImGui::Checkbox("3D BOX", &g_feat.box3d);
+        ImGui::Checkbox("ESP LINE", &g_feat.line);
+        ImGui::Checkbox("ESP HEALTH", &g_feat.health);
+        ImGui::Checkbox("ESP ARMOR", &g_feat.armor);
+        ImGui::Checkbox("ESP DISTANCE", &g_feat.distance);
+        ImGui::Checkbox("ESP NAME", &g_feat.name);
+        ImGui::Checkbox("ESP PLAYER ID", &g_feat.playerId);
+        ImGui::Checkbox("ESP CIRCLE", &g_feat.circle);
+        ImGui::Checkbox("ESP ALERT 360", &g_feat.alert);
+        ImGui::Checkbox("ENEMY COUNTER", &g_feat.counter);
+        ImGui::Checkbox("IGNORE KNOCKED", &g_feat.ignoreKnocked);
+        ImGui::Checkbox("ESP VEHICLE", &g_feat.vehicle);
+        ImGui::Combo("BOX STYLE", &g_feat.boxStyle, "Corners\0Full\0");
+        ImGui::Combo("LINE POS", &g_feat.linePos, "Bottom\0Top\0");
+        ImGui::EndChild();
         if (g_espOn) g_feat.esp = true;
 
         ImGui::Separator();

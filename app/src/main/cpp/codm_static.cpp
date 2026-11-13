@@ -89,13 +89,14 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
             const uintptr_t addr = reg[rn] + off;
             uintptr_t val = 0;
             if (!mem_read(pid, addr, val)) {
-                if (err && errCap) std::snprintf(err, errCap, "ldr fail");
-                return false;
+                known[rt] = false;
+                pc += 4;
+                continue;
             }
             /* Null is valid (lobby). Keep the slot so the next frame re-reads it. */
             reg[rt] = val;
-            known[rt] = val != 0;
-            slot = addr;
+            known[rt] = true;
+            if (rt == 0) slot = addr;
             pc += 4;
             continue;
         }
@@ -124,8 +125,9 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
             pc += 4;
             continue;
         }
-        if (err && errCap) std::snprintf(err, errCap, "insn 0x%08x", in);
-        return false;
+        /* Unknown op (e.g. 0x08190019). Skip so ADRP/LDR after it still run. */
+        pc += 4;
+        continue;
     }
     if (err && errCap) std::snprintf(err, errCap, "getter too long");
     return false;

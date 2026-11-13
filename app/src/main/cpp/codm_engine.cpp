@@ -7,6 +7,8 @@
 #include "remote_call.hpp"
 #include "ui_log.hpp"
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 static pid_t g_wantPid = 0;
 static bool g_anogsToast = false;
@@ -23,6 +25,22 @@ void codm_reset() {
 
 void codm_set_want_pid(pid_t pid) { g_wantPid = pid; }
 pid_t codm_want_pid() { return g_wantPid; }
+
+static void read_il2_name(pid_t pid, uintptr_t str, char *out, size_t cap) {
+    if (!out || cap < 2) return;
+    out[0] = '\0';
+    if (!mem_ptr_ok(str)) return;
+    int32_t len = 0;
+    if (!mem_read(pid, str + 0x10, len) || len <= 0 || len > 48) return;
+    uint16_t tmp[48];
+    if (!mem_read(pid, str + 0x14, tmp, static_cast<size_t>(len) * 2)) return;
+    size_t o = 0;
+    for (int i = 0; i < len && o + 1 < cap; ++i) {
+        const uint16_t c = tmp[i];
+        out[o++] = (c >= 32 && c < 127) ? static_cast<char>(c) : '?';
+    }
+    out[o] = '\0';
+}
 
 static bool read_il2_list(pid_t pid, uintptr_t listObj, std::vector<uintptr_t> &ptrs, int &size) {
     ptrs.clear();
@@ -79,43 +97,36 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         }
     }
 
-    /* Same as jnmaini GamePlay::get_MatchGame() — read the static the getter loads. */
+    /* jnmaini: MatchGame* GamePlay::get_MatchGame() */
     uintptr_t match = 0;
     char serr[80] = {};
     const uintptr_t matchFn = fr.unity + CodmOff::kMatchGame;
-    const bool gotSlot = codm_read_static_ptr(pid, matchFn, match, serr, sizeof(serr));
-    if (!gotSlot || !mem_ptr_ok(match)) {
-        if (mem_ptr_ok(g_matchCache) && gotSlot) {
-            match = g_matchCache;
-        } else if (!gotSlot && (g_matchLog++ % 15) == 0) {
-            uintptr_t via = 0;
-            RemoteSession s{};
-            char rerr[96] = {};
-            if (remote_session_begin_try(pid, s)) {
-                if (!remote_session_call(s, matchFn, {}, via))
-                    std::snprintf(rerr, sizeof(rerr), "%s", s.err);
-                remote_session_end(s);
-            } else {
-                std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "ptrace busy");
-            }
-            if (mem_ptr_ok(via)) {
-                match = via;
-            } else {
-                fr.status = CodmStatus::NoMatch;
-                std::snprintf(fr.hint, sizeof(fr.hint), "Not in match (%s)",
-                              serr[0] ? serr : (rerr[0] ? rerr : "null MatchGame"));
-                ui_log("[match] fn=0x%llx %s", (unsigned long long)matchFn, fr.hint);
-                return fr;
-            }
-        } else if (!mem_ptr_ok(match)) {
-            fr.status = CodmStatus::NoMatch;
-            g_matchCache = 0;
-            std::snprintf(fr.hint, sizeof(fr.hint), "Not in match");
-            return fr;
+    codm_read_static_ptr(pid, matchFn, match, serr, sizeof(serr));
+    auto match_ok = [&](uintptr_t m) {
+        if (!mem_ptr_ok(m)) return false;
+        uintptr_t klass = 0;
+        return mem_read(pid, m, klass) && mem_ptr_ok(klass);
+    };
+    if (!match_ok(match) && match_ok(g_matchCache)) match = g_matchCache;
+    if (!match_ok(match) && (g_matchLog++ % 4) == 0) {
+        uintptr_t via = 0;
+        char rerr[96] = {};
+        RemoteSession s{};
+        if (remote_session_begin_try(pid, s)) {
+            if (!remote_session_call(s, matchFn, {}, via))
+                std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "call failed");
+            remote_session_end(s);
+            ui_log("[match] tid=%d ret=0x%llx %s", (int)s.tid, (unsigned long long)via,
+                   rerr[0] ? rerr : "ok");
+        } else {
+            std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "ptrace busy");
+            ui_log("[match] %s", rerr);
         }
+        if (match_ok(via)) match = via;
     }
-    if (!mem_ptr_ok(match)) {
+    if (!match_ok(match)) {
         fr.status = CodmStatus::NoMatch;
+        g_matchCache = 0;
         std::snprintf(fr.hint, sizeof(fr.hint), "Not in match");
         return fr;
     }
@@ -158,6 +169,14 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         }
     }
 
+    Vec3 localPos{};
+    bool haveLocal = false;
+    if (haveCall) {
+        uintptr_t local = 0;
+        if (remote_session_call(sess, fr.unity + CodmOff::kLocalPawn, {}, local) && mem_ptr_ok(local))
+            haveLocal = remote_session_call_vec3(sess, fr.unity + CodmOff::kPawnLastPos, local, nullptr, localPos);
+    }
+
     int drawn = 0;
     for (int i = 0; i < n; ++i) {
         const uintptr_t pawn = pawns[static_cast<size_t>(i)];
@@ -169,11 +188,20 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         CodmEnemy en{};
         en.pawn = pawn;
         en.alive = true;
+        mem_read(pid, pawn + CodmOff::kPawnIsBot, en.bot);
 
         uintptr_t atk = 0;
         if (mem_read(pid, pawn + CodmOff::kAtkInfo, atk) && mem_ptr_ok(atk)) {
             mem_read(pid, atk + CodmOff::kHealth, en.hp);
             mem_read(pid, atk + CodmOff::kHealthMax, en.hpMax);
+            int state = 0;
+            if (mem_read(pid, atk + CodmOff::kPlayerState, state))
+                en.knocked = state == CodmOff::kKnocked;
+        }
+        uintptr_t info = 0;
+        if (mem_read(pid, pawn + CodmOff::kPawnPlayerInfo, info) && mem_ptr_ok(info)) {
+            mem_read(pid, info + CodmOff::kVest, en.armor);
+            mem_read(pid, info + CodmOff::kVestMax, en.armorMax);
         }
 
         Vec3 root{}, head{};
@@ -205,9 +233,54 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
                 en.screenOk = true;
             }
         }
-        en.dist = std::sqrt(root.x * root.x + root.z * root.z);
-        if (en.screenOk) ++drawn;
+        const float dx = root.x - (haveLocal ? localPos.x : 0.f);
+        const float dy = root.y - (haveLocal ? localPos.y : 0.f);
+        const float dz = root.z - (haveLocal ? localPos.z : 0.f);
+        en.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!en.screenOk) continue;
+        if (en.bot) ++fr.bots;
+        else ++fr.players;
+        if (feat.ignoreKnocked && en.knocked) continue;
+        if (haveCall && feat.name) {
+            uintptr_t str = 0;
+            if (remote_session_call(sess, fr.unity + CodmOff::kPlayerName, {pawn}, str))
+                read_il2_name(pid, str, en.name, sizeof(en.name));
+        }
+        if (haveCall && feat.playerId) {
+            uintptr_t seat = 0;
+            if (remote_session_call(sess, fr.unity + CodmOff::kTeamSeat, {pawn}, seat) && seat < 1000)
+                en.team = static_cast<int>(seat);
+        }
+        ++drawn;
         fr.enemies.push_back(en);
+    }
+    if (haveCall && feat.vehicle && mem_ptr_ok(cam)) {
+        uintptr_t vlist = 0;
+        std::vector<uintptr_t> vehs;
+        int vn = 0;
+        if (mem_read(pid, match + CodmOff::kVehicles, vlist) && read_il2_list(pid, vlist, vehs, vn)) {
+            if (vn > 12) vn = 12;
+            for (int v = 0; v < vn; ++v) {
+                uintptr_t tr = 0;
+                Vec3 pos{}, sc{};
+                if (!remote_session_call(sess, fr.unity + CodmOff::kGetTransform, {vehs[static_cast<size_t>(v)]}, tr))
+                    continue;
+                if (!mem_ptr_ok(tr)) continue;
+                if (!remote_session_call_vec3(sess, fr.unity + CodmOff::kTransformPos, tr, nullptr, pos)) continue;
+                if (!remote_session_call_vec3(sess, fr.unity + CodmOff::kWorldToScreen, cam, &pos, sc)) continue;
+                if (sc.z <= 0.1f) continue;
+                CodmEnemy en{};
+                en.vehicle = true;
+                en.alive = true;
+                en.screenOk = true;
+                en.screen = sc;
+                en.headScreen = sc;
+                en.world = pos;
+                en.dist = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+                std::snprintf(en.name, sizeof(en.name), "VEH");
+                fr.enemies.push_back(en);
+            }
+        }
     }
     if (haveCall) remote_session_end(sess);
     if (!haveCall)

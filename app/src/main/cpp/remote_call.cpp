@@ -2,9 +2,13 @@
 #include "mem.hpp"
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <mutex>
 #include <thread>
+#include <dirent.h>
 #include <errno.h>
 #include <sys/ptrace.h>
 #include <sys/uio.h>
@@ -55,7 +59,28 @@ static void fp_set_lane(CodmFpsimd &fp, int reg, float f) {
 
 static std::mutex g_ptraceSessionMu;
 
-static pid_t pick_tracee_tid(pid_t pid) { return pid; }
+/** Unity player loop — same thread jnmaini calls get_MatchGame from. */
+static pid_t pick_tracee_tid(pid_t pid) {
+    const std::string dir = "/proc/" + std::to_string(pid) + "/task";
+    DIR *d = opendir(dir.c_str());
+    if (!d) return pid;
+    pid_t unity = 0;
+    pid_t gfx = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+        const pid_t tid = static_cast<pid_t>(std::atoi(e->d_name));
+        std::ifstream in(dir + "/" + e->d_name + "/comm");
+        std::string comm;
+        std::getline(in, comm);
+        if (comm.find("UnityMain") != std::string::npos) unity = tid;
+        else if (comm.find("UnityGfx") != std::string::npos && !gfx) gfx = tid;
+    }
+    closedir(d);
+    if (unity) return unity;
+    if (gfx) return gfx;
+    return pid;
+}
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
     return reinterpret_cast<struct user_pt_regs *>(s.savedRegs);
@@ -162,9 +187,14 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
     bool success = false;
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 200; ++i) {
         const pid_t w = waitpid(s.tid, &st, WNOHANG);
-        if (w == s.tid) {
+        if (w == s.tid && WIFSTOPPED(st)) {
+            /* Syscall-stop from TRACESYSGOOD is not the function return. */
+            if (WSTOPSIG(st) == (SIGTRAP | 0x80)) {
+                ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
+                continue;
+            }
             success = true;
             break;
         }
