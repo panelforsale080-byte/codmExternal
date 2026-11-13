@@ -41,7 +41,7 @@ static bool copy_with_context(JNIEnv *env, jobject contextObj, const char *text)
     jmethodID setClip = env->GetMethodID(clipMgrCls, "setPrimaryClip", "(Landroid/content/ClipData;)V");
     if (!newPlain || !setClip) return false;
 
-    jstring label = env->NewStringUTF("MLBB ESP logs");
+    jstring label = env->NewStringUTF("CodmExternal logs");
     jstring data = env->NewStringUTF(text);
     jobject clip = env->CallStaticObjectMethod(clipDataCls, newPlain, label, data);
     if (!clip) return false;

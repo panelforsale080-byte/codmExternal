@@ -1,4 +1,5 @@
 #include "overlay_jni.hpp"
+#include "clip_android.hpp"
 #include "ui_core.hpp"
 #include <jni.h>
 
@@ -31,6 +32,11 @@ Java_com_xorel_codm_external_NativeBridge_nativeInit(JNIEnv *env, jclass clazz) 
     g_cls = (jclass)env->NewGlobalRef(clazz);
     g_menuTouch = env->GetStaticMethodID(clazz, "applyMenuTouch", "(Z)V");
     g_toast = env->GetStaticMethodID(clazz, "showToast", "(Ljava/lang/String;)V");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeSetContext(JNIEnv *env, jclass, jobject ctx) {
+    android_clip_set_context(g_vm, ctx);
 }
 
 extern "C" JNIEXPORT void JNICALL

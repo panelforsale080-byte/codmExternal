@@ -3,6 +3,7 @@
 #include "codm_engine.hpp"
 #include "codm_anogs.hpp"
 #include "codm_proc.hpp"
+#include "clip_android.hpp"
 #include "overlay_jni.hpp"
 #include "ui_log.hpp"
 
@@ -128,6 +129,17 @@ static void draw_ui() {
         if (g_espOn) g_feat.esp = true;
 
         ImGui::Separator();
+        if (ImGui::Button("Copy logs", ImVec2(-1, 0))) {
+            static char logCopy[16384];
+            ui_log_copy_all(logCopy, sizeof(logCopy));
+            if (android_copy_to_clipboard(logCopy)) {
+                ui_log("[ui] logs copied");
+                jni_toast("Logs copied");
+            } else {
+                ui_log("[ui] copy logs failed");
+                jni_toast("Copy logs failed");
+            }
+        }
         static char logBuf[8192];
         ui_log_copy_all(logBuf, sizeof(logBuf));
         ImGui::BeginChild("logs", ImVec2(0, 140), true);

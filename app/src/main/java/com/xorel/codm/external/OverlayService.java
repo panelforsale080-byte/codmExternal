@@ -71,6 +71,7 @@ public class OverlayService extends Service {
         }
         try {
             NativeBridge.nativeInit();
+            NativeBridge.nativeSetContext(getApplicationContext());
             startForegroundNotif();
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             int[] wh = new int[2];
