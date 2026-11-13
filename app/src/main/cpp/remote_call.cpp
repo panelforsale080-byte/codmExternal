@@ -23,8 +23,8 @@
 #ifndef NT_PRSTATUS
 #define NT_PRSTATUS 1
 #endif
-#ifndef NT_FPREGSET
-#define NT_FPREGSET 0x202
+#ifndef NT_PRFPREG
+#define NT_PRFPREG 2
 #endif
 
 struct CodmFpsimd {
@@ -38,12 +38,18 @@ static CodmFpsimd *saved_fp(RemoteSession &s) {
 
 static bool get_fp(pid_t tid, CodmFpsimd &fp) {
     struct iovec iov{&fp, sizeof(fp)};
-    return ptrace(PTRACE_GETREGSET, tid, (void *)NT_FPREGSET, &iov) == 0;
+    if (ptrace(PTRACE_GETREGSET, tid, (void *)NT_PRFPREG, &iov) == 0) return true;
+    iov.iov_base = &fp;
+    iov.iov_len = sizeof(fp);
+    return ptrace(PTRACE_GETREGSET, tid, (void *)0x202, &iov) == 0;
 }
 
 static bool set_fp(pid_t tid, const CodmFpsimd &fp) {
     struct iovec iov{const_cast<CodmFpsimd *>(&fp), sizeof(fp)};
-    return ptrace(PTRACE_SETREGSET, tid, (void *)NT_FPREGSET, &iov) == 0;
+    if (ptrace(PTRACE_SETREGSET, tid, (void *)NT_PRFPREG, &iov) == 0) return true;
+    iov.iov_base = const_cast<CodmFpsimd *>(&fp);
+    iov.iov_len = sizeof(fp);
+    return ptrace(PTRACE_SETREGSET, tid, (void *)0x202, &iov) == 0;
 }
 
 static float fp_lane(const CodmFpsimd &fp, int reg) {
@@ -118,11 +124,8 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
         return false;
     }
     s.sp = saved->sp;
-    if (!get_fp(s.tid, *saved_fp(s))) {
-        std::snprintf(s.err, sizeof(s.err), "GET FPREGSET fail");
-        ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
-        return false;
-    }
+    /* mlbb-pure only keeps GP regs. MatchGame returns x0, so a missing FP set must not abort. */
+    s.fpSaved = get_fp(s.tid, *saved_fp(s));
     s.attached = true;
     return true;
 }
@@ -150,7 +153,7 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
-        set_fp(s.tid, *saved_fp(s));
+        if (s.fpSaved) set_fp(s.tid, *saved_fp(s));
         set_regs(s.tid, *saved_pt(s));
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         s.attached = false;

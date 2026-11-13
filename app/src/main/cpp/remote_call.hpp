@@ -9,6 +9,7 @@ struct RemoteSession {
     pid_t pid = 0;
     pid_t tid = 0;
     bool attached = false;
+    bool fpSaved = false;
 #if defined(__aarch64__)
     alignas(8) unsigned char savedRegs[4096] = {};
     alignas(16) unsigned char savedFp[544] = {};

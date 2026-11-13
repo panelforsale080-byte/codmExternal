@@ -100,10 +100,10 @@ static void draw_ui() {
     }
 
     if (g_showMenu) {
-    const float mw = sw > 420.f ? 400.f : sw * 0.9f;
-    const float mh = sh > 520.f ? 480.f : sh * 0.75f;
+    const float mw = sw > 64.f ? sw * 0.94f : 400.f;
+    const float mh = sh > 64.f ? sh * 0.90f : 480.f;
     ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImVec2(24.f, 48.f), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2((sw - mw) * 0.5f, (sh - mh) * 0.5f), ImGuiCond_Always);
     if (ImGui::Begin("CodmExternal", &g_showMenu,
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::TextDisabled("Target: com.garena.game.codm");
@@ -125,6 +125,7 @@ static void draw_ui() {
         }
 
         ImGui::Separator();
+        ImGui::BeginChild("pages", ImVec2(0, -168.f), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
         if (ImGui::BeginTabBar("pages")) {
             if (ImGui::BeginTabItem("ESP")) {
                 if (ImGui::Checkbox("ESP ENABLE", &g_espOn)) {
@@ -215,6 +216,7 @@ static void draw_ui() {
             }
             ImGui::EndTabBar();
         }
+        ImGui::EndChild();
         if (g_espOn) g_feat.esp = true;
 
         ImGui::Separator();
