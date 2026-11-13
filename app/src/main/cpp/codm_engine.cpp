@@ -122,14 +122,14 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
     if (!match_ok(match) && now >= nextCall) {
         nextCall = now + std::chrono::seconds(2);
         uintptr_t via = 0;
-        char rerr[96] = {};
+        char rerr[160] = {};
         RemoteSession s{};
         if (remote_session_begin_try(pid, s)) {
             if (!remote_session_call(s, matchFn, {}, via))
                 std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "call failed");
             remote_session_end(s);
-            ui_log("[match] tid=%d ret=0x%llx %s", (int)s.tid, (unsigned long long)via,
-                   rerr[0] ? rerr : "ok");
+            ui_log("[match] tid=%d %s static=%s ret=0x%llx %s", (int)s.tid, s.comm,
+                   serr[0] ? serr : "0", (unsigned long long)via, rerr[0] ? rerr : "ok");
         } else {
             std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "ptrace busy");
             ui_log("[match] %s", rerr);

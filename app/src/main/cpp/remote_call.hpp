@@ -15,6 +15,7 @@ struct RemoteSession {
     alignas(16) unsigned char savedFp[544] = {};
     uint64_t sp = 0;
 #endif
+    char comm[20] = {};
     char err[160] = {};
 };
 

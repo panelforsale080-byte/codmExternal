@@ -42,14 +42,35 @@ static bool dec_ldr_u64(uint32_t insn, int &rt, int &rn, uint32_t &off) {
     return true;
 }
 
-/** CBZ/CBNZ, B.cond, HINT — fall through (jnmaini getter null-check path). */
+/** HINT and B.cond — condition flags are not tracked. */
 static bool skip_insn(uint32_t in) {
     if ((in & 0xFFFFF01Fu) == 0xD503201Fu) return true;
-    const uint32_t top = in >> 24;
-    if (top == 0x34 || top == 0x35 || top == 0xB4 || top == 0xB5) return true;
-    if (top == 0x36 || top == 0x37 || top == 0xB6 || top == 0xB7) return true;
     if ((in & 0xFF000010u) == 0x54000000u) return true;
     return false;
+}
+
+/** CBZ/CBNZ. Offset is applied to this instruction's PC. */
+static bool dec_cbz(uint32_t in, int &rt, int32_t &off, bool &cbnz) {
+    const uint32_t top = in >> 24;
+    if (top != 0x34 && top != 0x35 && top != 0xB4 && top != 0xB5) return false;
+    cbnz = top == 0x35 || top == 0xB5;
+    rt = (int)(in & 31u);
+    int32_t imm19 = (int32_t)((in >> 5) & 0x7FFFFu);
+    imm19 = (imm19 << 13) >> 13;
+    off = imm19 * 4;
+    return true;
+}
+
+/** TBZ/TBNZ. */
+static bool dec_tbz(uint32_t in, int &rt, int &bit, int32_t &off, bool &tbnz) {
+    if ((in & 0x7E000000u) != 0x36000000u) return false;
+    tbnz = ((in >> 24) & 1u) != 0;
+    rt = (int)(in & 31u);
+    bit = (int)(((in >> 19) & 0x1Fu) | ((in >> 26) & 0x20u));
+    int32_t imm14 = (int32_t)((in >> 5) & 0x3FFFu);
+    imm14 = (imm14 << 18) >> 18;
+    off = imm14 * 4;
+    return true;
 }
 
 static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, size_t errCap) {
@@ -120,6 +141,33 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
             imm26 = (imm26 << 6) >> 6;
             pc = pc + (uintptr_t)(int64_t)imm26 * 4u;
             continue;
+        }
+        /* Initialized class takes the branch over bl il2cpp_codegen_initialize. */
+        {
+            int brt = 0, bbit = 0;
+            int32_t boff = 0;
+            bool yes = false;
+            if (dec_cbz(in, brt, boff, yes) || dec_tbz(in, brt, bbit, boff, yes)) {
+                bool take = false;
+                if (!known[brt]) {
+                    uint32_t nxt = 0;
+                    mem_read(pid, pc + 4, nxt);
+                    take = (nxt & 0xFC000000u) == 0x94000000u;
+                } else if (dec_cbz(in, brt, boff, yes)) {
+                    take = yes ? reg[brt] != 0 : reg[brt] == 0;
+                } else {
+                    const uintptr_t mask = (bbit >= 0 && bbit < 64) ? (uintptr_t{1} << bbit) : 0;
+                    const bool set = (reg[brt] & mask) != 0;
+                    take = yes ? set : !set;
+                }
+                pc = take ? pc + (uintptr_t)(int64_t)boff : pc + 4;
+                continue;
+            }
+        }
+        /* A call here is runtime init. The MatchGame load is on the other side of the branch. */
+        if ((in & 0xFC000000u) == 0x94000000u) {
+            if (err && errCap) std::snprintf(err, errCap, "class not init");
+            return false;
         }
         if (skip_insn(in)) {
             pc += 4;

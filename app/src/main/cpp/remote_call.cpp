@@ -26,6 +26,9 @@
 #ifndef NT_PRFPREG
 #define NT_PRFPREG 2
 #endif
+#ifndef NT_ARM_SYSTEM_CALL
+#define NT_ARM_SYSTEM_CALL 0x404
+#endif
 
 struct CodmFpsimd {
     uint64_t v[64]{};
@@ -65,11 +68,6 @@ static void fp_set_lane(CodmFpsimd &fp, int reg, float f) {
 
 static std::mutex g_ptraceSessionMu;
 
-static bool tid_alive(pid_t pid, pid_t tid) {
-    const std::string p = "/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid);
-    return access(p.c_str(), F_OK) == 0;
-}
-
 static std::string thread_comm(pid_t pid, pid_t tid) {
     std::ifstream in("/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid) + "/comm");
     std::string comm;
@@ -78,39 +76,70 @@ static std::string thread_comm(pid_t pid, pid_t tid) {
     return comm;
 }
 
+/** -1 in /proc/tid/syscall means the thread is in userspace. A kernel restart ignores a new PC. */
+static bool thread_in_kernel(pid_t pid, pid_t tid) {
+    std::ifstream in("/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid) + "/syscall");
+    std::string line;
+    if (!std::getline(in, line)) return false;
+    size_t i = 0;
+    while (i < line.size() && line[i] == ' ') ++i;
+    if (i >= line.size()) return false;
+    const bool userspace = line[i] == '-' && i + 1 < line.size() && line[i + 1] == '1' &&
+                           (i + 2 >= line.size() || (line[i + 2] < '0' || line[i + 2] > '9'));
+    return !userspace;
+}
+
 /** jnmaini calls get_MatchGame on UnityMain. The process main thread is usually blocked
     in a syscall, so its x0 is -EINTR and is not a MatchGame pointer. */
-static pid_t pick_tracee_tid(pid_t pid) {
-    static pid_t cachedPid = 0;
-    static pid_t cachedTid = 0;
-    if (cachedPid == pid && cachedTid > 0 && cachedTid != pid && tid_alive(pid, cachedTid))
-        return cachedTid;
+static pid_t pick_tracee_tid(pid_t pid, char *names, size_t namesCap) {
+    if (names && namesCap) names[0] = '\0';
     const std::string dir = "/proc/" + std::to_string(pid) + "/task";
     DIR *d = opendir(dir.c_str());
-    pid_t unity = 0;
-    pid_t gfx = 0;
+    pid_t mainUser = 0;
+    pid_t mainAny = 0;
+    pid_t otherUser = 0;
     if (d) {
         struct dirent *e;
         while ((e = readdir(d)) != nullptr) {
             if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
             const pid_t tid = static_cast<pid_t>(std::atoi(e->d_name));
+            if (tid == pid) continue;
             const std::string comm = thread_comm(pid, tid);
-            if (comm.find("UnityMain") != std::string::npos) {
-                unity = tid;
-                break;
+            const bool isMain = comm.find("UnityMain") != std::string::npos;
+            const bool isUnity = isMain || comm.find("Unity") != std::string::npos;
+            if (!isUnity) {
+                if (names && namesCap && std::strlen(names) + comm.size() + 1 < namesCap && !comm.empty()) {
+                    if (names[0]) std::strncat(names, ",", namesCap - std::strlen(names) - 1);
+                    std::strncat(names, comm.c_str(), namesCap - std::strlen(names) - 1);
+                }
+                continue;
             }
-            if (!gfx && comm.find("Unity") != std::string::npos) gfx = tid;
+            const bool user = !thread_in_kernel(pid, tid);
+            if (isMain && user) mainUser = tid;
+            else if (isMain && !mainAny) mainAny = tid;
+            else if (user && !otherUser) otherUser = tid;
         }
         closedir(d);
     }
-    cachedPid = pid;
-    cachedTid = unity ? unity : gfx;
-    return cachedTid;
+    if (mainUser) return mainUser;
+    if (otherUser) return otherUser;
+    return mainAny;
 }
 
-static bool insn_is_svc(pid_t pid, uintptr_t pc) {
-    uint32_t in = 0;
-    return mem_read(pid, pc, in) && in == 0xD4000001u;
+/** Plain ret, or PAC retaa/retab/autiasp. x0 is already the return value. */
+static bool insn_is_return(uint32_t in) {
+    return in == 0xD65F03C0u || in == 0xD65F0BFFu || in == 0xD65F0FFFu || in == 0xD50323BFu ||
+           in == 0xD50323FFu;
+}
+
+static bool get_syscallno(pid_t tid, int &no) {
+    struct iovec iov{&no, sizeof(no)};
+    return ptrace(PTRACE_GETREGSET, tid, (void *)(uintptr_t)NT_ARM_SYSTEM_CALL, &iov) == 0;
+}
+
+static bool set_syscallno(pid_t tid, int no) {
+    struct iovec iov{&no, sizeof(no)};
+    return ptrace(PTRACE_SETREGSET, tid, (void *)(uintptr_t)NT_ARM_SYSTEM_CALL, &iov) == 0;
 }
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
@@ -162,11 +191,14 @@ static bool ensure_stopped(pid_t tid) {
 static bool session_begin_locked(pid_t pid, RemoteSession &s) {
     s = RemoteSession{};
     s.pid = pid;
-    s.tid = pick_tracee_tid(pid);
+    char others[120] = {};
+    s.tid = pick_tracee_tid(pid, others, sizeof(others));
     if (s.tid <= 0) {
-        std::snprintf(s.err, sizeof(s.err), "no UnityMain thread");
+        std::snprintf(s.err, sizeof(s.err), "no UnityMain thread%s%s", others[0] ? " " : "", others);
         return false;
     }
+    const std::string comm = thread_comm(pid, s.tid);
+    std::snprintf(s.comm, sizeof(s.comm), "%s", comm.c_str());
     if (!stable_ptrace_attach(s.tid)) {
         std::snprintf(s.err, sizeof(s.err), "PTRACE_SEIZE: %s", std::strerror(errno));
         return false;
@@ -233,19 +265,10 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
-    /* Leave a syscall before changing PC. Otherwise the next ret uses LR=0 and x0 stays -EINTR. */
-    for (int i = 0; i < 3 && insn_is_svc(s.pid, saved_pt(s)->pc); ++i) {
-        ptrace(PTRACE_SYSCALL, s.tid, nullptr, nullptr);
-        if (!wait_stopped(s.tid, 40) || !get_regs(s.tid, *saved_pt(s))) break;
-    }
-    if (insn_is_svc(s.pid, saved_pt(s)->pc)) {
-        std::snprintf(s.err, sizeof(s.err), "thread in syscall");
-        return false;
-    }
-    /* jnmaini calls get_MatchGame() and uses x0. mlbb-pure reads x0 on the return stop,
-       then restores the old PC. Syscall results (-4) are not accepted. */
+    int savedNo = -1;
+    const bool hadNo = get_syscallno(s.tid, savedNo);
     struct user_pt_regs work = *saved_pt(s);
-    const uintptr_t originPc = work.pc;
+    const uintptr_t originPc = work.pc & 0x00FFFFFFFFFFFFFFULL;
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
     work.sp = saved_pt(s)->sp & ~uintptr_t{0xF};
@@ -255,28 +278,41 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;
     }
+    /* syscallno >= 0 makes the kernel ignore the new PC and restart the old call. */
+    int neg = -1;
+    set_syscallno(s.tid, neg);
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     bool got = false;
-    for (int i = 0; i < 50 && !got; ++i) {
+    int lastSig = 0;
+    uintptr_t lastPc = 0;
+    bool saw = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < deadline && !got && !s.err[0]) {
         int st = 0;
         const pid_t w = waitpid(s.tid, &st, WNOHANG);
         if (w == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
         if (w < 0 && errno != EINTR) break;
         if (w != s.tid || !WIFSTOPPED(st)) continue;
         const int sig = WSTOPSIG(st);
+        lastSig = sig;
         if (sig == (SIGTRAP | 0x80)) {
             ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
             continue;
         }
         if (!get_regs(s.tid, work)) break;
-        const bool returned = (sig == SIGSEGV || sig == SIGBUS) && work.pc < 0x1000;
-        if (returned) {
+        const uintptr_t pc = (uintptr_t)work.pc & 0x00FFFFFFFFFFFFFFULL;
+        lastPc = pc;
+        saw = true;
+        uint32_t in = 0;
+        const bool atRet = pc >= 0x10000 && mem_read(s.pid, pc, in) && insn_is_return(in);
+        const bool fault = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL;
+        if (fault && (pc < 0x1000 || atRet)) {
             const uintptr_t x0 = (uintptr_t)work.regs[0];
-            /* -1 .. -4095 are errno values left by a syscall, not a MatchGame*. */
-            if (x0 > (uintptr_t)-4096) {
+            /* Return-to-0 from a restarted syscall still holds -EINTR. A ret in the callee does not. */
+            if (pc < 0x1000 && !atRet && x0 > (uintptr_t)-4096) {
                 std::snprintf(s.err, sizeof(s.err), "syscall x0");
                 break;
             }
@@ -284,20 +320,42 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
             got = true;
             break;
         }
-        if (work.pc == originPc) {
-            ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
-            continue;
+        if (fault) {
+            std::snprintf(s.err, sizeof(s.err), "call fault sig=%d pc=0x%llx", sig,
+                          (unsigned long long)pc);
+            break;
+        }
+        if (pc == originPc) {
+            std::snprintf(s.err, sizeof(s.err), "pc not applied");
+            break;
         }
         ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     }
-    if (!got) {
-        if (!s.err[0]) std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+    if (!got && !s.err[0]) {
+        ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
+        if (wait_stopped(s.tid, 60) && get_regs(s.tid, work)) {
+            const uintptr_t pc = (uintptr_t)work.pc & 0x00FFFFFFFFFFFFFFULL;
+            if (pc == originPc)
+                std::snprintf(s.err, sizeof(s.err), "pc not applied");
+            else
+                std::snprintf(s.err, sizeof(s.err), "timeout sig=%d pc=0x%llx", lastSig,
+                              (unsigned long long)(saw ? lastPc : pc));
+        } else if (!s.err[0]) {
+            std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+        }
+    } else if (!got) {
         ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
         wait_stopped(s.tid, 40);
     }
+    if (hadNo) set_syscallno(s.tid, savedNo);
+    else set_syscallno(s.tid, neg);
     if (!set_regs(s.tid, *saved_pt(s))) {
-        std::snprintf(s.err, sizeof(s.err), "restore regs fail");
-        return false;
+        ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
+        wait_stopped(s.tid, 80);
+        if (!set_regs(s.tid, *saved_pt(s))) {
+            std::snprintf(s.err, sizeof(s.err), "restore regs fail");
+            return false;
+        }
     }
     return got;
 }
