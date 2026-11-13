@@ -13,7 +13,10 @@ struct SlotCache {
 static std::unordered_map<uintptr_t, SlotCache> g_slots;
 static pid_t g_slotPid = 0;
 
-static bool is_ret(uint32_t i) { return i == 0xD65F03C0u; }
+static bool is_ret(uint32_t i) {
+    /* ret, retaa, retab. PAC epilogues are not plain ret. */
+    return i == 0xD65F03C0u || i == 0xD65F0BFFu || i == 0xD65F0FFFu;
+}
 
 static bool dec_adrp(uint32_t insn, uintptr_t pc, int &rd, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -76,6 +79,7 @@ static bool dec_tbz(uint32_t in, int &rt, int &bit, int32_t &off, bool &tbnz) {
 static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, size_t errCap) {
     uintptr_t reg[32] = {};
     bool known[32] = {};
+    bool computed[32] = {};
     slot = 0;
     uintptr_t pc = fn;
     for (int step = 0; step < 48; ++step) {
@@ -97,12 +101,14 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
         if (dec_adrp(in, pc, rd, page)) {
             reg[rd] = page;
             known[rd] = true;
+            computed[rd] = true;
             pc += 4;
             continue;
         }
         if (dec_add_imm(in, rd, rn, imm) && known[rn]) {
             reg[rd] = reg[rn] + imm;
             known[rd] = true;
+            computed[rd] = computed[rn];
             pc += 4;
             continue;
         }
@@ -111,12 +117,14 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
             uintptr_t val = 0;
             if (!mem_read(pid, addr, val)) {
                 known[rt] = false;
+                computed[rt] = false;
                 pc += 4;
                 continue;
             }
             /* Null is valid (lobby). Keep the slot so the next frame re-reads it. */
             reg[rt] = val;
             known[rt] = true;
+            computed[rt] = false;
             if (rt == 0) slot = addr;
             pc += 4;
             continue;
@@ -128,9 +136,11 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
             if (rm == 31) {
                 reg[rdd] = 0;
                 known[rdd] = false;
+                computed[rdd] = false;
             } else if (known[rm]) {
                 reg[rdd] = reg[rm];
                 known[rdd] = true;
+                computed[rdd] = computed[rm];
             }
             pc += 4;
             continue;
@@ -164,8 +174,18 @@ static bool emulate_slot(pid_t pid, uintptr_t fn, uintptr_t &slot, char *err, si
                 continue;
             }
         }
-        /* A call here is runtime init. The MatchGame load is on the other side of the branch. */
+        /* il2cpp_codegen_initialize_runtime_metadata(&TypeInfo) returns the class pointer.
+           jnmaini calls that from the player thread. Doing it with ptrace crashes UnityMain,
+           so once the game has stored the class, skip the call and keep reading. */
         if ((in & 0xFC000000u) == 0x94000000u) {
+            uintptr_t cls = 0;
+            if (known[0] && computed[0] && mem_read(pid, reg[0], cls) && cls) {
+                reg[0] = cls;
+                known[0] = true;
+                computed[0] = false;
+                pc += 4;
+                continue;
+            }
             if (err && errCap) std::snprintf(err, errCap, "class not init");
             return false;
         }

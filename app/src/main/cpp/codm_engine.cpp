@@ -116,30 +116,12 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         return mem_read(pid, m, klass) && mem_ptr_ok(klass);
     };
     if (!match_ok(match) && match_ok(g_matchCache)) match = g_matchCache;
-    /* Hijacking UnityMain every frame crashes the match. Try at most once every 2s. */
-    static std::chrono::steady_clock::time_point nextCall{};
-    const auto now = std::chrono::steady_clock::now();
-    if (!match_ok(match) && now >= nextCall) {
-        nextCall = now + std::chrono::seconds(2);
-        uintptr_t via = 0;
-        char rerr[160] = {};
-        RemoteSession s{};
-        if (remote_session_begin_try(pid, s)) {
-            if (!remote_session_call(s, matchFn, {}, via))
-                std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "call failed");
-            remote_session_end(s);
-            ui_log("[match] tid=%d %s static=%s ret=0x%llx %s", (int)s.tid, s.comm,
-                   serr[0] ? serr : "0", (unsigned long long)via, rerr[0] ? rerr : "ok");
-        } else {
-            std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "ptrace busy");
-            ui_log("[match] %s", rerr);
-        }
-        if (match_ok(via)) match = via;
-    }
+    /* Do not ptrace-call get_MatchGame. The uninitialized getter calls
+       il2cpp init on UnityMain and that SIGSEGV is what killed the match. */
     if (!match_ok(match)) {
         fr.status = CodmStatus::NoMatch;
         g_matchCache = 0;
-        std::snprintf(fr.hint, sizeof(fr.hint), "Not in match");
+        std::snprintf(fr.hint, sizeof(fr.hint), "%s", serr[0] ? serr : "Not in match");
         return fr;
     }
     g_matchCache = match;

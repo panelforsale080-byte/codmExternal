@@ -239,8 +239,17 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
-        if (s.fpSaved) set_fp(s.tid, *saved_fp(s));
-        set_regs(s.tid, *saved_pt(s));
+        bool restored = false;
+        for (int i = 0; i < 8 && !restored; ++i) {
+            if (set_regs(s.tid, *saved_pt(s))) {
+                restored = true;
+                break;
+            }
+            if (errno == ESRCH) break;
+            ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
+            wait_stopped(s.tid, 40);
+        }
+        if (restored && s.fpSaved) set_fp(s.tid, *saved_fp(s));
         /* data = 0: do not deliver the SIGSEGV from a return to address 0. */
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         s.attached = false;
