@@ -106,7 +106,14 @@ static bool stable_ptrace_attach(pid_t tid) {
     if (ptrace(PTRACE_SEIZE, tid, nullptr, (void *)PTRACE_O_TRACESYSGOOD) != 0) return false;
     if (ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0) return false;
     int st = 0;
-    return waitpid(tid, &st, 0) == tid;
+    return waitpid(tid, &st, 0) == tid && WIFSTOPPED(st);
+}
+
+static bool ensure_stopped(pid_t tid) {
+    int st = 0;
+    if (waitpid(tid, &st, WNOHANG) == tid && WIFSTOPPED(st)) return true;
+    if (ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0) return false;
+    return waitpid(tid, &st, 0) == tid && WIFSTOPPED(st);
 }
 
 static bool session_begin_locked(pid_t pid, RemoteSession &s) {
@@ -118,7 +125,7 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
         return false;
     }
     auto *saved = saved_pt(s);
-    if (!get_regs(s.tid, *saved)) {
+    if (!get_regs(s.tid, *saved) && !(ensure_stopped(s.tid) && get_regs(s.tid, *saved))) {
         std::snprintf(s.err, sizeof(s.err), "GETREGSET fail");
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         return false;
@@ -153,8 +160,10 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
+        if (!ensure_stopped(s.tid)) ensure_stopped(s.tid);
         if (s.fpSaved) set_fp(s.tid, *saved_fp(s));
-        set_regs(s.tid, *saved_pt(s));
+        if (!set_regs(s.tid, *saved_pt(s))) set_regs(s.tid, *saved_pt(s));
+        /* data = 0: do not deliver SIGSEGV left by a bad return. */
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         s.attached = false;
     }
@@ -178,11 +187,19 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
+    /* Spin here on return. LR=0 jumps to address 0 and SIGSEGV-kills the game. */
+    const uintptr_t stub = remote_session_scratch(s, 31, 16);
+    const uint32_t spin = 0x14000000u; /* b . */
+    if (!stub || !mem_write(s.pid, stub, &spin, sizeof(spin))) {
+        std::snprintf(s.err, sizeof(s.err), "return stub fail");
+        return false;
+    }
     struct user_pt_regs work = *saved_pt(s);
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
+    work.sp = saved_pt(s)->sp & ~uintptr_t{0xF};
     work.pc = func;
-    work.regs[30] = 0;
+    work.regs[30] = stub;
     if (!set_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;
@@ -190,36 +207,41 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
     bool success = false;
-    for (int i = 0; i < 200; ++i) {
-        const pid_t w = waitpid(s.tid, &st, WNOHANG);
-        if (w == s.tid && WIFSTOPPED(st)) {
-            /* Syscall-stop from TRACESYSGOOD is not the function return. */
-            if (WSTOPSIG(st) == (SIGTRAP | 0x80)) {
-                ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
-                continue;
+    bool fatal = false;
+    /* b . does not trap, so sample PC. A fault stop is restored and not delivered. */
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (waitpid(s.tid, &st, WNOHANG) == s.tid && WIFSTOPPED(st)) {
+            const int sig = WSTOPSIG(st);
+            if (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) {
+                fatal = true;
+                std::snprintf(s.err, sizeof(s.err), "call signal %d", sig);
+                break;
             }
+        }
+        if (!ensure_stopped(s.tid) || !get_regs(s.tid, work)) break;
+        if (work.pc == stub || work.pc == stub + 4) {
             success = true;
             break;
         }
-        if (w < 0 && errno != EINTR) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     }
-    if (!success) {
-        ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
-        (void)waitpid(s.tid, &st, 0);
-        std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
-    }
-    if (!get_regs(s.tid, work)) {
+    if (!ensure_stopped(s.tid) || !get_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "GETREGSET after call");
         set_regs(s.tid, *saved_pt(s));
         return false;
     }
-    ret_x0 = (uintptr_t)work.regs[0];
+    if (work.pc == stub || work.pc == stub + 4) {
+        success = true;
+        ret_x0 = (uintptr_t)work.regs[0];
+    } else if (!fatal) {
+        std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+    }
     if (!set_regs(s.tid, *saved_pt(s))) {
         std::snprintf(s.err, sizeof(s.err), "restore regs fail");
         return false;
     }
-    return success;
+    return success && !fatal;
 }
 
 bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,

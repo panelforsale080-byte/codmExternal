@@ -8,6 +8,7 @@
 #include "remote_call.hpp"
 #include "ui_log.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -115,7 +116,11 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         return mem_read(pid, m, klass) && mem_ptr_ok(klass);
     };
     if (!match_ok(match) && match_ok(g_matchCache)) match = g_matchCache;
-    if (!match_ok(match) && (g_matchLog++ % 4) == 0) {
+    /* Hijacking UnityMain every frame crashes the match. Try at most once every 2s. */
+    static std::chrono::steady_clock::time_point nextCall{};
+    const auto now = std::chrono::steady_clock::now();
+    if (!match_ok(match) && now >= nextCall) {
+        nextCall = now + std::chrono::seconds(2);
         uintptr_t via = 0;
         char rerr[96] = {};
         RemoteSession s{};
