@@ -79,35 +79,45 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
         }
     }
 
+    /* Same as jnmaini GamePlay::get_MatchGame() — read the static the getter loads. */
     uintptr_t match = 0;
     char serr[80] = {};
     const uintptr_t matchFn = fr.unity + CodmOff::kMatchGame;
-    if (!codm_read_static_ptr(pid, matchFn, match, serr, sizeof(serr)) || !mem_ptr_ok(match)) {
-        if (mem_ptr_ok(g_matchCache)) {
+    const bool gotSlot = codm_read_static_ptr(pid, matchFn, match, serr, sizeof(serr));
+    if (!gotSlot || !mem_ptr_ok(match)) {
+        if (mem_ptr_ok(g_matchCache) && gotSlot) {
             match = g_matchCache;
-        } else if ((g_matchLog++ % 20) == 0) {
-            char rerr[96] = {};
+        } else if (!gotSlot && (g_matchLog++ % 15) == 0) {
             uintptr_t via = 0;
             RemoteSession s{};
+            char rerr[96] = {};
             if (remote_session_begin_try(pid, s)) {
-                uintptr_t ret = 0;
-                if (remote_session_call(s, matchFn, {}, ret) && mem_ptr_ok(ret)) via = ret;
-                else std::snprintf(rerr, sizeof(rerr), "%s", s.err);
+                if (!remote_session_call(s, matchFn, {}, via))
+                    std::snprintf(rerr, sizeof(rerr), "%s", s.err);
                 remote_session_end(s);
+            } else {
+                std::snprintf(rerr, sizeof(rerr), "%s", s.err[0] ? s.err : "ptrace busy");
             }
-            if (mem_ptr_ok(via)) match = via;
-            else {
+            if (mem_ptr_ok(via)) {
+                match = via;
+            } else {
                 fr.status = CodmStatus::NoMatch;
                 std::snprintf(fr.hint, sizeof(fr.hint), "Not in match (%s)",
-                              serr[0] ? serr : (rerr[0] ? rerr : "no MatchGame"));
-                ui_log("[match] %s", fr.hint);
+                              serr[0] ? serr : (rerr[0] ? rerr : "null MatchGame"));
+                ui_log("[match] fn=0x%llx %s", (unsigned long long)matchFn, fr.hint);
                 return fr;
             }
-        } else {
+        } else if (!mem_ptr_ok(match)) {
             fr.status = CodmStatus::NoMatch;
+            g_matchCache = 0;
             std::snprintf(fr.hint, sizeof(fr.hint), "Not in match");
             return fr;
         }
+    }
+    if (!mem_ptr_ok(match)) {
+        fr.status = CodmStatus::NoMatch;
+        std::snprintf(fr.hint, sizeof(fr.hint), "Not in match");
+        return fr;
     }
     g_matchCache = match;
 
@@ -166,30 +176,36 @@ CodmFrame codm_tick(const CodmFeatures &feat) {
             mem_read(pid, atk + CodmOff::kHealthMax, en.hpMax);
         }
 
-        Vec3 pos{};
+        Vec3 root{}, head{};
         bool gotPos = false;
         if (haveCall) {
-            gotPos = remote_session_call_vec3(sess, fr.unity + CodmOff::kPawnLastPos, pawn, nullptr, pos);
-            if (!gotPos || (pos.x == 0.f && pos.y == 0.f && pos.z == 0.f)) {
+            gotPos = remote_session_call_vec3(sess, fr.unity + CodmOff::kPawnLastPos, pawn, nullptr, root);
+            if (!remote_session_call_vec3(sess, fr.unity + CodmOff::kPawnHeadPos, pawn, nullptr, head))
+                head = root;
+            if (!gotPos || (root.x == 0.f && root.y == 0.f && root.z == 0.f)) {
                 uintptr_t mesh = 0;
-                Vec3 p2{};
                 if (mem_read(pid, pawn + CodmOff::kPawnMesh, mesh) && mem_ptr_ok(mesh) &&
-                    remote_session_call_vec3(sess, fr.unity + CodmOff::kTransformPos, mesh, nullptr, p2)) {
-                    pos = p2;
+                    remote_session_call_vec3(sess, fr.unity + CodmOff::kTransformPos, mesh, nullptr, root))
                     gotPos = true;
-                }
+                if (head.x == 0.f && head.y == 0.f && head.z == 0.f) head = root;
             }
         }
-        if (!gotPos || !std::isfinite(pos.x)) continue;
-        en.world = pos;
+        if (!gotPos || !std::isfinite(root.x)) continue;
+        en.world = root;
 
         if (haveCall && mem_ptr_ok(cam)) {
-            Vec3 scr{};
-            if (remote_session_call_vec3(sess, fr.unity + CodmOff::kWorldToScreen, cam, &pos, scr)) {
-                en.screen = scr;
-                en.screenOk = scr.z > 0.05f;
+            Vec3 rootSc{}, headSc{};
+            const bool okR =
+                remote_session_call_vec3(sess, fr.unity + CodmOff::kWorldToScreen, cam, &root, rootSc);
+            const bool okH =
+                remote_session_call_vec3(sess, fr.unity + CodmOff::kWorldToScreen, cam, &head, headSc);
+            if (okR && okH && rootSc.z > 0.1f && headSc.z > 0.1f) {
+                en.screen = rootSc;
+                en.headScreen = headSc;
+                en.screenOk = true;
             }
         }
+        en.dist = std::sqrt(root.x * root.x + root.z * root.z);
         if (en.screenOk) ++drawn;
         fr.enemies.push_back(en);
     }

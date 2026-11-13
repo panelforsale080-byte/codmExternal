@@ -10,6 +10,7 @@ constexpr uintptr_t kCameraMain = 0x52D5CDC;
 constexpr uintptr_t kWorldToScreen = 0x52D5820;
 constexpr uintptr_t kTransformPos = 0x532DF40;
 constexpr uintptr_t kPawnLastPos = 0x538AABC;
+constexpr uintptr_t kPawnHeadPos = 0x538A478;
 
 constexpr uintptr_t kEnemyPawns = 0x178;
 

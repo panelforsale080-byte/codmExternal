@@ -9,14 +9,21 @@ void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame
 
     for (const CodmEnemy &e : fr.enemies) {
         if (!e.alive || !e.screenOk) continue;
-        const float sx = e.screen.x;
-        const float sy = screenH - e.screen.y;
-        if (sx < -screenW || sy < -screenH || sx > screenW * 2.f || sy > screenH * 2.f) continue;
-
-        const float boxH = 72.f;
-        const float boxW = 38.f;
-        const ImVec2 a(sx - boxW * 0.5f, sy - boxH);
-        const ImVec2 b(sx + boxW * 0.5f, sy);
+        const float hx = e.headScreen.x;
+        const float hy = screenH - e.headScreen.y;
+        const float rx = e.screen.x;
+        const float ry = screenH - e.screen.y;
+        float boxH = std::fabs(e.headScreen.y - e.screen.y) * 1.1f;
+        float boxW = boxH * 0.40f;
+        if (boxH < 8.f) {
+            boxH = 72.f;
+            boxW = 38.f;
+        }
+        const ImVec2 a(hx - boxW * 0.5f, hy - boxH * 0.1f);
+        const ImVec2 b(a.x + boxW, a.y + boxH);
+        if (b.x < 0 || a.x > screenW || b.y < 0 || a.y > screenH) continue;
+        const float sx = rx;
+        const float sy = ry;
 
         if (feat.box)
             dl->AddRect(a, b, IM_COL32(255, 60, 60, 230), 0.f, 0, 2.f);
@@ -30,7 +37,7 @@ void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame
         }
         if (feat.distance) {
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.0fm", std::sqrt(e.world.x * e.world.x + e.world.z * e.world.z));
+            std::snprintf(buf, sizeof(buf), "%.0fm", e.dist);
             dl->AddText(ImVec2(a.x, b.y + 2.f), IM_COL32(255, 255, 255, 230), buf);
         }
     }

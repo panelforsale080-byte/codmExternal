@@ -15,6 +15,8 @@ struct CodmEnemy {
     uintptr_t pawn = 0;
     Vec3 world{};
     Vec3 screen{};
+    Vec3 headScreen{};
+    float dist = 0;
     float hp = 0;
     float hpMax = 0;
     bool alive = false;
