@@ -102,18 +102,36 @@ static bool set_regs(pid_t tid, const struct user_pt_regs &regs) {
     return ptrace(PTRACE_SETREGSET, tid, (void *)NT_PRSTATUS, &iov) == 0;
 }
 
+static bool wait_stopped(pid_t tid, int timeoutMs) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    int st = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const pid_t w = waitpid(tid, &st, WNOHANG);
+        if (w == tid && WIFSTOPPED(st)) return true;
+        if (w < 0 && errno != EINTR) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
 static bool stable_ptrace_attach(pid_t tid) {
     if (ptrace(PTRACE_SEIZE, tid, nullptr, (void *)PTRACE_O_TRACESYSGOOD) != 0) return false;
-    if (ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0) return false;
-    int st = 0;
-    return waitpid(tid, &st, 0) == tid && WIFSTOPPED(st);
+    if (ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0) {
+        ptrace(PTRACE_DETACH, tid, nullptr, nullptr);
+        return false;
+    }
+    if (wait_stopped(tid, 80)) return true;
+    /* A blocking wait here freezes UnityMain and leaves the menu on Waiting. */
+    ptrace(PTRACE_DETACH, tid, nullptr, nullptr);
+    errno = ETIMEDOUT;
+    return false;
 }
 
 static bool ensure_stopped(pid_t tid) {
     int st = 0;
     if (waitpid(tid, &st, WNOHANG) == tid && WIFSTOPPED(st)) return true;
     if (ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0) return false;
-    return waitpid(tid, &st, 0) == tid && WIFSTOPPED(st);
+    return wait_stopped(tid, 40);
 }
 
 static bool session_begin_locked(pid_t pid, RemoteSession &s) {
@@ -160,7 +178,7 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
-        if (!ensure_stopped(s.tid)) ensure_stopped(s.tid);
+        ensure_stopped(s.tid);
         if (s.fpSaved) set_fp(s.tid, *saved_fp(s));
         if (!set_regs(s.tid, *saved_pt(s))) set_regs(s.tid, *saved_pt(s));
         /* data = 0: do not deliver SIGSEGV left by a bad return. */
@@ -209,8 +227,8 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     bool success = false;
     bool fatal = false;
     /* b . does not trap, so sample PC. A fault stop is restored and not delivered. */
-    for (int i = 0; i < 40; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (int i = 0; i < 8; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
         if (waitpid(s.tid, &st, WNOHANG) == s.tid && WIFSTOPPED(st)) {
             const int sig = WSTOPSIG(st);
             if (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) {
