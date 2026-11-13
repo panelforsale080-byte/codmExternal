@@ -19,9 +19,17 @@ static void corner_box(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col) {
 
 void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame &fr,
                    const CodmFeatures &feat) {
-    if (!dl || !feat.esp || fr.status != CodmStatus::Ready) return;
+    if (!dl || fr.status != CodmStatus::Ready) return;
+    if (!feat.esp && !feat.silentAim) return;
 
-    if (feat.counter) {
+    auto pack = [](const float c[4]) {
+        return IM_COL32((int)(c[0] * 255.f), (int)(c[1] * 255.f), (int)(c[2] * 255.f), (int)(c[3] * 255.f));
+    };
+    if (feat.silentAim && feat.priority == 1 && !feat.handCam && feat.aimFov > 1.f)
+        dl->AddCircle(ImVec2(screenW * 0.5f, screenH * 0.5f), feat.aimFov, IM_COL32(255, 255, 255, 140), 64, 1.5f);
+    if (!feat.esp) return;
+
+    if (feat.counter && !feat.handCam) {
         char label[64];
         std::snprintf(label, sizeof(label), "[Player]%d   [AI]%d", fr.players, fr.bots);
         const ImVec2 ts = ImGui::CalcTextSize(label);
@@ -50,8 +58,10 @@ void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame
         const ImVec2 a(hx - boxW * 0.5f, hy - boxH * 0.1f);
         const ImVec2 b(a.x + boxW, a.y + boxH);
         const bool onScreen = !(b.x < 0 || a.x > screenW || b.y < 0 || a.y > screenH);
-        const ImU32 col = e.knocked ? IM_COL32(255, 180, 40, 230)
-                                    : (e.bot ? IM_COL32(80, 220, 255, 230) : IM_COL32(255, 60, 60, 230));
+        const ImU32 col = e.knocked ? pack(feat.colKnocked)
+                                    : (e.bot ? (e.visible ? pack(feat.colBot) : pack(feat.colHidden))
+                                             : (e.visible ? pack(feat.colEnemy) : pack(feat.colHidden)));
+        const ImU32 boxCol = pack(feat.colDefault);
 
         if (feat.alert) {
             const float m = 28.f;
@@ -65,11 +75,24 @@ void codm_draw_esp(ImDrawList *dl, float screenW, float screenH, const CodmFrame
         }
         if (!onScreen) continue;
 
+        if (feat.skeleton) {
+            const int link[5][2] = {{0, 1}, {1, 2}, {2, 3}, {1, 4}, {1, 5}};
+            for (const auto &ln : link) {
+                if (!e.skelOk[ln[0]] || !e.skelOk[ln[1]]) continue;
+                const float x1 = e.skel[ln[0]].x, y1 = screenH - e.skel[ln[0]].y;
+                const float x2 = e.skel[ln[1]].x, y2 = screenH - e.skel[ln[1]].y;
+                dl->AddLine(ImVec2(x1, y1), ImVec2(x2, y2), boxCol, 1.5f);
+            }
+        }
         if (feat.circle)
             dl->AddCircle(ImVec2(rx, ry), boxW * 0.55f, col, 24, 1.5f);
         if (feat.box) {
-            if (feat.boxStyle == 1) dl->AddRect(a, b, col, 2.f, 0, 1.f);
-            else corner_box(dl, a, b, col);
+            if (feat.boxStyle == 1) {
+                dl->AddRectFilled(a, b, (boxCol & 0x00FFFFFFu) | 0x40000000u);
+                dl->AddRect(a, b, boxCol, 0.f, 0, 1.5f);
+            } else {
+                corner_box(dl, a, b, boxCol);
+            }
         }
         if (feat.box3d) {
             const float w = boxW * 0.35f;

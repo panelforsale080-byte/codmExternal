@@ -31,6 +31,10 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
 bool remote_session_call_vec3(RemoteSession &s, uintptr_t func, uintptr_t x0, const Vec3 *in,
                               Vec3 &out);
 
+/** Float args/results in v0.. (Quaternion is 4 floats). */
+bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,
+                           float *out, int outN);
+
 /* Single-shot (attach → one call → detach). */
 bool remote_call(pid_t pid, uintptr_t func, const std::vector<uintptr_t> &args, uintptr_t &ret_x0,
                  char *err, size_t errCap);

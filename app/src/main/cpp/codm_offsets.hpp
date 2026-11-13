@@ -14,6 +14,18 @@ constexpr uintptr_t kPawnHeadPos = 0x538A478;
 constexpr uintptr_t kGetTransform = 0x52DAEC4;
 constexpr uintptr_t kTeamSeat = 0x538A780;
 constexpr uintptr_t kVehicles = 0x1A0;
+constexpr uintptr_t kCanSee = 0x9A0;
+constexpr uintptr_t kBoneMap = 0xA8;
+constexpr uintptr_t kBoneTable = 0x10;
+constexpr uintptr_t kBoneNode = 0x40;
+constexpr uintptr_t kAimGet = 0x5385F80;
+constexpr uintptr_t kAimSet = 0x5386048;
+constexpr uintptr_t kIsFiring = 0x5379778;
+constexpr uintptr_t kIsAiming = 0x536BAE0;
+constexpr uintptr_t kForward = 0x534ECCC;
+constexpr uintptr_t kCurrentWeapon = 0x535BE4C;
+constexpr uintptr_t kCategoryName = 0xC0D0730;
+constexpr uintptr_t kWallhack = 0x5565680;
 
 constexpr uintptr_t kEnemyPawns = 0x178;
 

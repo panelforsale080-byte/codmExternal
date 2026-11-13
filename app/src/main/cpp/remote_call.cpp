@@ -219,6 +219,28 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     return success;
 }
 
+bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,
+                           float *out, int outN) {
+    if (!s.attached || !func) return false;
+    if (in && inN > 0) {
+        CodmFpsimd fp = *saved_fp(s);
+        const int n = inN > 8 ? 8 : inN;
+        for (int i = 0; i < n; ++i) fp_set_lane(fp, i, in[i]);
+        if (!set_fp(s.tid, fp)) return false;
+    }
+    uintptr_t dummy = 0;
+    std::vector<uintptr_t> args;
+    if (x0) args.push_back(x0);
+    if (!remote_session_call(s, func, args, dummy)) return false;
+    if (out && outN > 0) {
+        CodmFpsimd fp{};
+        if (!get_fp(s.tid, fp)) return false;
+        const int n = outN > 8 ? 8 : outN;
+        for (int i = 0; i < n; ++i) out[i] = fp_lane(fp, i);
+    }
+    return true;
+}
+
 bool remote_session_call_vec3(RemoteSession &s, uintptr_t func, uintptr_t x0, const Vec3 *in,
                               Vec3 &out) {
     out = {};
@@ -268,6 +290,9 @@ bool remote_session_call(RemoteSession &, uintptr_t, const std::vector<uintptr_t
     return false;
 }
 bool remote_session_call_vec3(RemoteSession &, uintptr_t, uintptr_t, const Vec3 *, Vec3 &) {
+    return false;
+}
+bool remote_session_call_f(RemoteSession &, uintptr_t, uintptr_t, const float *, int, float *, int) {
     return false;
 }
 bool remote_call(pid_t, uintptr_t, const std::vector<uintptr_t> &, uintptr_t &, char *err,

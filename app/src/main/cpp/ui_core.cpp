@@ -56,6 +56,8 @@ static void reader_loop() {
     auto next = clock::now();
     while (g_runReader.load()) {
         CodmFeatures feat = g_feat;
+        feat.screenW = g_displayW > 0 ? (float)g_displayW : (float)g_w;
+        feat.screenH = g_displayH > 0 ? (float)g_displayH : (float)g_h;
         if (g_espOn) feat.esp = true;
         else feat.esp = false;
         CodmFrame tick = codm_tick(feat);
@@ -63,7 +65,8 @@ static void reader_loop() {
             std::lock_guard<std::mutex> lock(g_mu);
             g_frame = std::move(tick);
         }
-        next += std::chrono::milliseconds(g_espOn || g_showMenu ? 33 : 200);
+        const bool hot = g_espOn || g_showMenu || g_feat.silentAim || g_feat.wallhack || g_feat.maphack;
+        next += std::chrono::milliseconds(hot ? 33 : 200);
         std::this_thread::sleep_until(next);
     }
 }
@@ -86,7 +89,7 @@ static void draw_ui() {
     /* Caller (ui_gl_draw_frame) already holds g_mu — do not lock again. */
     CodmFrame fr = g_frame;
 
-    if (g_espOn && fr.status == CodmStatus::Ready) {
+    if ((g_espOn || g_feat.silentAim) && fr.status == CodmStatus::Ready) {
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
         codm_draw_esp(bg, sw, sh, fr, g_feat);
     }
@@ -122,27 +125,96 @@ static void draw_ui() {
         }
 
         ImGui::Separator();
-        if (ImGui::Checkbox("ESP ENABLE", &g_espOn)) {
-            if (g_espOn) ui_esp_start();
-            else ui_esp_stop();
+        if (ImGui::BeginTabBar("pages")) {
+            if (ImGui::BeginTabItem("ESP")) {
+                if (ImGui::Checkbox("ESP ENABLE", &g_espOn)) {
+                    if (g_espOn) ui_esp_start();
+                    else ui_esp_stop();
+                }
+                ImGui::Checkbox("Line", &g_feat.line);
+                ImGui::Checkbox("2D Box", &g_feat.box);
+                ImGui::Checkbox("Name", &g_feat.name);
+                ImGui::Checkbox("Player ID", &g_feat.playerId);
+                ImGui::Checkbox("Vehicle", &g_feat.vehicle);
+                ImGui::Checkbox("3D Box", &g_feat.box3d);
+                ImGui::Checkbox("Armor", &g_feat.armor);
+                ImGui::Checkbox("Alert", &g_feat.alert);
+                ImGui::Checkbox("Health", &g_feat.health);
+                ImGui::Checkbox("Distance", &g_feat.distance);
+                ImGui::Checkbox("Circle", &g_feat.circle);
+                ImGui::Checkbox("Skeleton", &g_feat.skeleton);
+                ImGui::Checkbox("Enemy Counter", &g_feat.counter);
+                ImGui::RadioButton("Line Bottom", &g_feat.linePos, 0);
+                ImGui::SameLine();
+                ImGui::RadioButton("Up", &g_feat.linePos, 1);
+                ImGui::RadioButton("Box Outline", &g_feat.boxStyle, 0);
+                ImGui::SameLine();
+                ImGui::RadioButton("Filled", &g_feat.boxStyle, 1);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Aim")) {
+                ImGui::Checkbox("SILENT AIM", &g_feat.silentAim);
+                ImGui::Checkbox("Ignore Wall", &g_feat.ignoreWall);
+                ImGui::Checkbox("Ignore Knocked Enemy", &g_feat.ignoreKnocked);
+                ImGui::SliderFloat("AIM SMOOTHNESS", &g_feat.aimSmooth, 1.f, 100.f);
+                ImGui::SliderFloat("AIM SPEED", &g_feat.aimSpeed, 1.f, 100.f);
+                ImGui::SliderFloat("AIM FOV", &g_feat.aimFov, 1.f, 500.f);
+                ImGui::SliderFloat("Recoil", &g_feat.recoil, 0.f, 100.f);
+                ImGui::SliderFloat("ADS", &g_feat.ads, 0.f, 100.f);
+                ImGui::SliderFloat("Reload", &g_feat.reload, 0.f, 100.f);
+                ImGui::SliderFloat("Spread", &g_feat.spread, 0.f, 100.f);
+                ImGui::SliderFloat("Aim Range", &g_feat.aimRange, 0.f, 200.f);
+                ImGui::Combo("Location", &g_feat.targetMode, "BODY\0HEAD\0CHEST\0FEET\0");
+                ImGui::Combo("Priority", &g_feat.priority, "NEAREST\0FOV\0");
+                ImGui::Combo("Trigger", &g_feat.trigger, "NONE\0SHOOTING\0SCOPING\0HYBRID\0");
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Memory")) {
+                ImGui::Checkbox("Wallhack", &g_feat.wallhack);
+                ImGui::Checkbox("Maphack", &g_feat.maphack);
+                ImGui::Checkbox("No Parachute", &g_feat.noParachute);
+                ImGui::Checkbox("Fast Swim", &g_feat.fastSwim);
+                ImGui::Checkbox("Extend Hitbox", &g_feat.hitbox);
+                ImGui::Checkbox("No Shake", &g_feat.noShake);
+                ImGui::Checkbox("Disable Crouch", &g_feat.noCrouch);
+                ImGui::Checkbox("Misdirection", &g_feat.misdirection);
+                ImGui::SliderFloat("Aim Assist", &g_feat.aimAssist, 0.f, 100.f);
+                ImGui::SliderFloat("Fov BR", &g_feat.fovBr, 0.f, 200.f);
+                ImGui::SliderFloat("Fov MP", &g_feat.fovMp, 0.f, 200.f);
+                ImGui::SliderFloat("Snowb Speed", &g_feat.snow, 0.f, 70.f);
+                ImGui::SliderFloat("Loot Speed", &g_feat.loot, 0.f, 100.f);
+                ImGui::SliderFloat("Game Speed", &g_feat.gameSpeed, 0.f, 70.f);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Weapon")) {
+                static int cat = 0;
+                ImGui::Combo("Gun", &cat, "AR\0Sniper\0SMG\0LMG\0Shotgun\0Pistol\0Marksman\0");
+                if (cat < 0) cat = 0;
+                if (cat > 6) cat = 6;
+                ImGui::Checkbox("Hitbox", &g_feat.weapon[cat].hitbox);
+                ImGui::Checkbox("No Shake", &g_feat.weapon[cat].noShake);
+                ImGui::SliderFloat("Assist", &g_feat.weapon[cat].assist, 0.f, 100.f);
+                ImGui::SliderFloat("Recoil", &g_feat.weapon[cat].recoil, 0.f, 100.f);
+                ImGui::SliderFloat("Reload", &g_feat.weapon[cat].reload, 0.f, 100.f);
+                ImGui::SliderFloat("Spread", &g_feat.weapon[cat].spread, 0.f, 100.f);
+                ImGui::SliderFloat("ADS", &g_feat.weapon[cat].ads, 0.f, 100.f);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Settings")) {
+                ImGui::Checkbox("Force 120 FPS", &g_feat.frame120);
+                ImGui::Checkbox("Force 40 FPS", &g_feat.frame40);
+                ImGui::Checkbox("Hand Cam Mode", &g_feat.handCam);
+                ImGui::Checkbox("Disable VisCheck", &g_feat.disableVis);
+                ImGui::Checkbox("Skip Tutorial", &g_feat.skipTutorial);
+                ImGui::ColorEdit4("Enemy", g_feat.colEnemy, ImGuiColorEditFlags_NoInputs);
+                ImGui::ColorEdit4("Bot", g_feat.colBot, ImGuiColorEditFlags_NoInputs);
+                ImGui::ColorEdit4("Hidden", g_feat.colHidden, ImGuiColorEditFlags_NoInputs);
+                ImGui::ColorEdit4("Knocked", g_feat.colKnocked, ImGuiColorEditFlags_NoInputs);
+                ImGui::ColorEdit4("Default", g_feat.colDefault, ImGuiColorEditFlags_NoInputs);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        ImGui::BeginChild("feats", ImVec2(0, 210), true);
-        ImGui::Checkbox("ESP BOX", &g_feat.box);
-        ImGui::Checkbox("3D BOX", &g_feat.box3d);
-        ImGui::Checkbox("ESP LINE", &g_feat.line);
-        ImGui::Checkbox("ESP HEALTH", &g_feat.health);
-        ImGui::Checkbox("ESP ARMOR", &g_feat.armor);
-        ImGui::Checkbox("ESP DISTANCE", &g_feat.distance);
-        ImGui::Checkbox("ESP NAME", &g_feat.name);
-        ImGui::Checkbox("ESP PLAYER ID", &g_feat.playerId);
-        ImGui::Checkbox("ESP CIRCLE", &g_feat.circle);
-        ImGui::Checkbox("ESP ALERT 360", &g_feat.alert);
-        ImGui::Checkbox("ENEMY COUNTER", &g_feat.counter);
-        ImGui::Checkbox("IGNORE KNOCKED", &g_feat.ignoreKnocked);
-        ImGui::Checkbox("ESP VEHICLE", &g_feat.vehicle);
-        ImGui::Combo("BOX STYLE", &g_feat.boxStyle, "Corners\0Full\0");
-        ImGui::Combo("LINE POS", &g_feat.linePos, "Bottom\0Top\0");
-        ImGui::EndChild();
         if (g_espOn) g_feat.esp = true;
 
         ImGui::Separator();
@@ -283,7 +355,7 @@ void ui_minimize_menu() {
     ui_sync_menu_touch_state();
 }
 bool ui_menu_interactive() { return g_showMenu; }
-bool ui_needs_continuous_gl() { return g_showMenu || g_espOn; }
+bool ui_needs_continuous_gl() { return g_showMenu || g_espOn || g_feat.silentAim; }
 
 void ui_esp_start() {
     g_espOn = true;

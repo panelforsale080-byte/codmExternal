@@ -11,6 +11,7 @@ add_library(CodmEsp SHARED
     codm_remote.cpp
     codm_static.cpp
     codm_engine.cpp
+    codm_mods.cpp
     codm_draw.cpp
     mem.cpp
     remote_call.cpp
