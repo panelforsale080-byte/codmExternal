@@ -70,32 +70,47 @@ static bool tid_alive(pid_t pid, pid_t tid) {
     return access(p.c_str(), F_OK) == 0;
 }
 
-/** jnmaini calls get_MatchGame on the Unity player thread. Keep one live tid. */
+static std::string thread_comm(pid_t pid, pid_t tid) {
+    std::ifstream in("/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid) + "/comm");
+    std::string comm;
+    std::getline(in, comm);
+    while (!comm.empty() && (comm.back() == '\r' || comm.back() == ' ')) comm.pop_back();
+    return comm;
+}
+
+/** jnmaini calls get_MatchGame on UnityMain. The process main thread is usually blocked
+    in a syscall, so its x0 is -EINTR and is not a MatchGame pointer. */
 static pid_t pick_tracee_tid(pid_t pid) {
     static pid_t cachedPid = 0;
     static pid_t cachedTid = 0;
-    if (cachedPid == pid && cachedTid > 0 && tid_alive(pid, cachedTid)) return cachedTid;
+    if (cachedPid == pid && cachedTid > 0 && cachedTid != pid && tid_alive(pid, cachedTid))
+        return cachedTid;
     const std::string dir = "/proc/" + std::to_string(pid) + "/task";
     DIR *d = opendir(dir.c_str());
     pid_t unity = 0;
+    pid_t gfx = 0;
     if (d) {
         struct dirent *e;
         while ((e = readdir(d)) != nullptr) {
             if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
             const pid_t tid = static_cast<pid_t>(std::atoi(e->d_name));
-            std::ifstream in(dir + "/" + e->d_name + "/comm");
-            std::string comm;
-            std::getline(in, comm);
-            if (comm == "UnityMain") {
+            const std::string comm = thread_comm(pid, tid);
+            if (comm.find("UnityMain") != std::string::npos) {
                 unity = tid;
                 break;
             }
+            if (!gfx && comm.find("Unity") != std::string::npos) gfx = tid;
         }
         closedir(d);
     }
     cachedPid = pid;
-    cachedTid = unity ? unity : pid;
+    cachedTid = unity ? unity : gfx;
     return cachedTid;
+}
+
+static bool insn_is_svc(pid_t pid, uintptr_t pc) {
+    uint32_t in = 0;
+    return mem_read(pid, pc, in) && in == 0xD4000001u;
 }
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
@@ -148,6 +163,10 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
     s = RemoteSession{};
     s.pid = pid;
     s.tid = pick_tracee_tid(pid);
+    if (s.tid <= 0) {
+        std::snprintf(s.err, sizeof(s.err), "no UnityMain thread");
+        return false;
+    }
     if (!stable_ptrace_attach(s.tid)) {
         std::snprintf(s.err, sizeof(s.err), "PTRACE_SEIZE: %s", std::strerror(errno));
         return false;
@@ -214,8 +233,17 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
-    /* jnmaini calls get_MatchGame() and uses x0. mlbb-pure waits for the stop, reads x0,
-       then restores the old PC. A syscall-stop (x0 = -EINTR / -4) is not that return. */
+    /* Leave a syscall before changing PC. Otherwise the next ret uses LR=0 and x0 stays -EINTR. */
+    for (int i = 0; i < 3 && insn_is_svc(s.pid, saved_pt(s)->pc); ++i) {
+        ptrace(PTRACE_SYSCALL, s.tid, nullptr, nullptr);
+        if (!wait_stopped(s.tid, 40) || !get_regs(s.tid, *saved_pt(s))) break;
+    }
+    if (insn_is_svc(s.pid, saved_pt(s)->pc)) {
+        std::snprintf(s.err, sizeof(s.err), "thread in syscall");
+        return false;
+    }
+    /* jnmaini calls get_MatchGame() and uses x0. mlbb-pure reads x0 on the return stop,
+       then restores the old PC. Syscall results (-4) are not accepted. */
     struct user_pt_regs work = *saved_pt(s);
     const uintptr_t originPc = work.pc;
     for (size_t i = 0; i < args.size() && i < 8; ++i)
@@ -244,9 +272,15 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
             continue;
         }
         if (!get_regs(s.tid, work)) break;
-        const bool returned = sig == SIGSEGV || sig == SIGBUS || work.pc < 0x1000;
+        const bool returned = (sig == SIGSEGV || sig == SIGBUS) && work.pc < 0x1000;
         if (returned) {
-            ret_x0 = (uintptr_t)work.regs[0];
+            const uintptr_t x0 = (uintptr_t)work.regs[0];
+            /* -1 .. -4095 are errno values left by a syscall, not a MatchGame*. */
+            if (x0 > (uintptr_t)-4096) {
+                std::snprintf(s.err, sizeof(s.err), "syscall x0");
+                break;
+            }
+            ret_x0 = x0;
             got = true;
             break;
         }
@@ -257,7 +291,7 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     }
     if (!got) {
-        std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+        if (!s.err[0]) std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
         ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
         wait_stopped(s.tid, 40);
     }
