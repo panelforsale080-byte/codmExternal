@@ -214,9 +214,10 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
-    /* Same stop-and-restore as mlbb-pure. LR=0 faults on return; x0 still holds the result.
-       Do not continue after that stop — resuming at address 0 kills the Unity thread. */
+    /* jnmaini calls get_MatchGame() and uses x0. mlbb-pure waits for the stop, reads x0,
+       then restores the old PC. A syscall-stop (x0 = -EINTR / -4) is not that return. */
     struct user_pt_regs work = *saved_pt(s);
+    const uintptr_t originPc = work.pc;
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
     work.sp = saved_pt(s)->sp & ~uintptr_t{0xF};
@@ -227,33 +228,44 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         return false;
     }
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
-    int st = 0;
-    bool stopped = false;
-    for (int i = 0; i < 40; ++i) {
+    bool got = false;
+    for (int i = 0; i < 50 && !got; ++i) {
+        int st = 0;
         const pid_t w = waitpid(s.tid, &st, WNOHANG);
-        if (w == s.tid && WIFSTOPPED(st)) {
-            stopped = true;
-            break;
+        if (w == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
         if (w < 0 && errno != EINTR) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (w != s.tid || !WIFSTOPPED(st)) continue;
+        const int sig = WSTOPSIG(st);
+        if (sig == (SIGTRAP | 0x80)) {
+            ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
+            continue;
+        }
+        if (!get_regs(s.tid, work)) break;
+        const bool returned = sig == SIGSEGV || sig == SIGBUS || work.pc < 0x1000;
+        if (returned) {
+            ret_x0 = (uintptr_t)work.regs[0];
+            got = true;
+            break;
+        }
+        if (work.pc == originPc) {
+            ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
+            continue;
+        }
+        ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     }
-    if (!stopped) {
+    if (!got) {
+        std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
         ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
-        stopped = wait_stopped(s.tid, 60);
-        if (!stopped) std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+        wait_stopped(s.tid, 40);
     }
-    if (!get_regs(s.tid, work)) {
-        std::snprintf(s.err, sizeof(s.err), "GETREGSET after call");
-        set_regs(s.tid, *saved_pt(s));
-        return false;
-    }
-    ret_x0 = (uintptr_t)work.regs[0];
     if (!set_regs(s.tid, *saved_pt(s))) {
         std::snprintf(s.err, sizeof(s.err), "restore regs fail");
         return false;
     }
-    return stopped;
+    return got;
 }
 
 bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,
