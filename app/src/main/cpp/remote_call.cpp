@@ -65,27 +65,37 @@ static void fp_set_lane(CodmFpsimd &fp, int reg, float f) {
 
 static std::mutex g_ptraceSessionMu;
 
-/** Unity player loop — same thread jnmaini calls get_MatchGame from. */
+static bool tid_alive(pid_t pid, pid_t tid) {
+    const std::string p = "/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid);
+    return access(p.c_str(), F_OK) == 0;
+}
+
+/** jnmaini calls get_MatchGame on the Unity player thread. Keep one live tid. */
 static pid_t pick_tracee_tid(pid_t pid) {
+    static pid_t cachedPid = 0;
+    static pid_t cachedTid = 0;
+    if (cachedPid == pid && cachedTid > 0 && tid_alive(pid, cachedTid)) return cachedTid;
     const std::string dir = "/proc/" + std::to_string(pid) + "/task";
     DIR *d = opendir(dir.c_str());
-    if (!d) return pid;
     pid_t unity = 0;
-    pid_t gfx = 0;
-    struct dirent *e;
-    while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
-        const pid_t tid = static_cast<pid_t>(std::atoi(e->d_name));
-        std::ifstream in(dir + "/" + e->d_name + "/comm");
-        std::string comm;
-        std::getline(in, comm);
-        if (comm.find("UnityMain") != std::string::npos) unity = tid;
-        else if (comm.find("UnityGfx") != std::string::npos && !gfx) gfx = tid;
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+            const pid_t tid = static_cast<pid_t>(std::atoi(e->d_name));
+            std::ifstream in(dir + "/" + e->d_name + "/comm");
+            std::string comm;
+            std::getline(in, comm);
+            if (comm == "UnityMain") {
+                unity = tid;
+                break;
+            }
+        }
+        closedir(d);
     }
-    closedir(d);
-    if (unity) return unity;
-    if (gfx) return gfx;
-    return pid;
+    cachedPid = pid;
+    cachedTid = unity ? unity : pid;
+    return cachedTid;
 }
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
@@ -178,10 +188,9 @@ bool remote_session_begin_try(pid_t pid, RemoteSession &s) {
 
 void remote_session_end(RemoteSession &s) {
     if (s.attached) {
-        ensure_stopped(s.tid);
         if (s.fpSaved) set_fp(s.tid, *saved_fp(s));
-        if (!set_regs(s.tid, *saved_pt(s))) set_regs(s.tid, *saved_pt(s));
-        /* data = 0: do not deliver SIGSEGV left by a bad return. */
+        set_regs(s.tid, *saved_pt(s));
+        /* data = 0: do not deliver the SIGSEGV from a return to address 0. */
         ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
         s.attached = false;
     }
@@ -205,61 +214,46 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
-    /* Spin here on return. LR=0 jumps to address 0 and SIGSEGV-kills the game. */
-    const uintptr_t stub = remote_session_scratch(s, 31, 16);
-    const uint32_t spin = 0x14000000u; /* b . */
-    if (!stub || !mem_write(s.pid, stub, &spin, sizeof(spin))) {
-        std::snprintf(s.err, sizeof(s.err), "return stub fail");
-        return false;
-    }
+    /* Same stop-and-restore as mlbb-pure. LR=0 faults on return; x0 still holds the result.
+       Do not continue after that stop — resuming at address 0 kills the Unity thread. */
     struct user_pt_regs work = *saved_pt(s);
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
     work.sp = saved_pt(s)->sp & ~uintptr_t{0xF};
     work.pc = func;
-    work.regs[30] = stub;
+    work.regs[30] = 0;
     if (!set_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;
     }
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
-    bool success = false;
-    bool fatal = false;
-    /* b . does not trap, so sample PC. A fault stop is restored and not delivered. */
-    for (int i = 0; i < 8; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(4));
-        if (waitpid(s.tid, &st, WNOHANG) == s.tid && WIFSTOPPED(st)) {
-            const int sig = WSTOPSIG(st);
-            if (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) {
-                fatal = true;
-                std::snprintf(s.err, sizeof(s.err), "call signal %d", sig);
-                break;
-            }
-        }
-        if (!ensure_stopped(s.tid) || !get_regs(s.tid, work)) break;
-        if (work.pc == stub || work.pc == stub + 4) {
-            success = true;
+    bool stopped = false;
+    for (int i = 0; i < 40; ++i) {
+        const pid_t w = waitpid(s.tid, &st, WNOHANG);
+        if (w == s.tid && WIFSTOPPED(st)) {
+            stopped = true;
             break;
         }
-        ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
+        if (w < 0 && errno != EINTR) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    if (!ensure_stopped(s.tid) || !get_regs(s.tid, work)) {
+    if (!stopped) {
+        ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
+        stopped = wait_stopped(s.tid, 60);
+        if (!stopped) std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
+    }
+    if (!get_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "GETREGSET after call");
         set_regs(s.tid, *saved_pt(s));
         return false;
     }
-    if (work.pc == stub || work.pc == stub + 4) {
-        success = true;
-        ret_x0 = (uintptr_t)work.regs[0];
-    } else if (!fatal) {
-        std::snprintf(s.err, sizeof(s.err), "ptrace call timeout");
-    }
+    ret_x0 = (uintptr_t)work.regs[0];
     if (!set_regs(s.tid, *saved_pt(s))) {
         std::snprintf(s.err, sizeof(s.err), "restore regs fail");
         return false;
     }
-    return success && !fatal;
+    return stopped;
 }
 
 bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,
